@@ -6,6 +6,7 @@ import torch
 from dataclasses import dataclass
 from typing import Literal, Optional
 import warnings
+from datetime import datetime
 from pydantic.warnings import UnsupportedFieldAttributeWarning
 
 warnings.filterwarnings("ignore", category=UnsupportedFieldAttributeWarning)
@@ -82,8 +83,25 @@ class ExperimentConfig:
     
     seed: int = 42
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
-    checkpoint_dir: str = './checkpoints'
+    # checkpoint directory for saving models and logs add the date-time stamp
     experiment_name: str = 'default'
+    timestamp: str = datetime.now().strftime('%Y%m%d_%H%M%S')
+    checkpoint_dir: str = f'./checkpoints/{experiment_name}_{timestamp}'
+
+    def dict(self):
+        """Convert the ExperimentConfig to a dictionary"""
+        return {
+            'model': vars(self.model),
+            'scheduler': vars(self.scheduler),
+            'training': vars(self.training),
+            'data': vars(self.data),
+            'logging': vars(self.logging),
+            'seed': self.seed,
+            'device': self.device,
+            'experiment_name': self.experiment_name,
+            'timestamp': self.timestamp,
+            'checkpoint_dir': self.checkpoint_dir,
+        }
     
 def get_config(config_name: str = 'default') -> ExperimentConfig:
     """Factory function for different experiment configurations"""

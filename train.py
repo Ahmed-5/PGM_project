@@ -217,6 +217,11 @@ def train(config: ExperimentConfig):
     
     # Create directories
     Path(config.checkpoint_dir).mkdir(parents=True, exist_ok=True)
+
+    # save config to file
+    config_path = os.path.join(config.checkpoint_dir, f'{config.experiment_name}_config.json')
+    with open(config_path, 'w') as f:
+        json.dump(config.dict(), f, indent=4)
     
     # Initialize logger
     logger = get_logger(config)
@@ -343,15 +348,17 @@ def train(config: ExperimentConfig):
         epoch_metrics = {**train_metrics, **val_metrics}
         epoch_metrics['learning_rate'] = optimizer.param_groups[0]['lr']
         epoch_metrics['epoch'] = epoch
+
+        global_step = epoch * len(train_loader)
         
         # Log epoch metrics
-        logger.log_metrics(epoch_metrics, step=epoch)
+        logger.log_metrics(epoch_metrics, step=global_step)
         
         # Log current alpha values for learnable schedule
         if config.scheduler.schedule_type == 'learnable':
             current_alphas = model.get_scheduler_alphas().detach().cpu().numpy()
             for i, alpha in enumerate(current_alphas):
-                logger.log_metrics({f'schedule/alpha_layer_{i}': alpha}, step=epoch)
+                logger.log_metrics({f'schedule/alpha_layer_{i}': alpha}, step=global_step)
         
         # Print epoch summary
         print(f"\nEpoch {epoch}/{config.training.num_epochs}")
@@ -405,7 +412,7 @@ def train(config: ExperimentConfig):
     )
     
     # Log test metrics
-    logger.log_metrics(test_metrics, step=epoch + 1)
+    logger.log_metrics(test_metrics, step=global_step)
     
     print("\n" + "=" * 80)
     print("TEST SET RESULTS")
@@ -422,7 +429,7 @@ def train(config: ExperimentConfig):
         config.scheduler.schedule_type,
         save_path=os.path.join(config.checkpoint_dir, 'alpha_schedule_final.png')
     )
-    logger.log_image('schedule/final_alphas', alpha_fig, step=epoch + 1)
+    logger.log_image('schedule/final_alphas', alpha_fig, step=global_step)
     plt.close(alpha_fig)
     
     # Save alpha values
