@@ -1,0 +1,16 @@
+torch==2.8.0
+torch-geometric>=2.3.0
+torch-scatter>=2.1.0
+torch-sparse>=0.6.0
+torch-cluster>=1.6.0
+
+# Logging (optional)
+wandb>=0.15.0
+tensorboard>=2.13.0
+
+# Utilities
+numpy>=1.24.0
+matplotlib>=3.7.0
+tqdm>=4.65.0
+
+e3nn>=0.5.1
