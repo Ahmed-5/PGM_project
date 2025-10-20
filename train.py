@@ -420,6 +420,7 @@ def train(config: ExperimentConfig):
     print(f"Test Loss:      {test_metrics['test/loss']:.4f}")
     print(f"Test Task Loss: {test_metrics['test/task_loss']:.4f}")
     print(f"Test Eq Loss:   {test_metrics['test/eq_loss']:.4f}")
+    print(f"Test Eq Est:    {test_metrics['test/eq_measure']:.4f}")
     print("=" * 80)
     
     # Save final alpha schedule

@@ -140,6 +140,7 @@ def main(config_name: str = 'default', checkpoint_path: str = None, logger_type:
     print(f"Test Loss:      {metrics['test/loss']:.4f}")
     print(f"Test Task Loss: {metrics['test/task_loss']:.4f}")
     print(f"Test Eq Loss:   {metrics['test/eq_loss']:.4f}")
+    print(f"Test Eq Est:    {metrics['test/eq_measure']:.4f}")
     
     # Log metrics
     logger.log_metrics(metrics, step=0)
