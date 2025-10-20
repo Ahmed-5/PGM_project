@@ -380,6 +380,8 @@ def train(config: ExperimentConfig):
             # Save as wandb artifact
             if hasattr(logger, 'save_model_artifact'):
                 logger.save_model_artifact(checkpoint_path, name='best_model')
+        else:
+            print(f"  ✗ No improvement (best_val_loss: {best_val_loss:.4f})")
         
         # Early stopping
         early_stopping(val_metrics['val/loss'])
