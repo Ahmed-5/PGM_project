@@ -90,6 +90,7 @@ class RelaxedEquivariantGNN(nn.Module):
             task_loss_fn: Loss function for task (defaults to MSE for regression)
             
         Returns:
+            pred: Predictions
             total_loss: Combined loss
             loss_dict: Dictionary with loss components for logging
         """
@@ -151,7 +152,7 @@ class RelaxedEquivariantGNN(nn.Module):
             'layer_eq_loss_measures': layer_eq_loss_measures
         }
         
-        return total_loss, loss_dict
+        return pred, total_loss, loss_dict
     
     def get_scheduler_alphas(self) -> torch.Tensor:
         """Get current alpha values from scheduler"""

@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 
 from config import ExperimentConfig, get_config
 from relaxed_gnn import RelaxedEquivariantGNN
-from utils import set_seed, save_checkpoint, load_checkpoint, EarlyStopping
+from utils import set_seed, save_checkpoint, load_checkpoint, EarlyStopping, compute_mae, compute_rmse, compute_r2_score
 from logger import get_logger, MetricsTracker
 import warnings
 from pydantic.warnings import UnsupportedFieldAttributeWarning
@@ -95,13 +95,17 @@ def train_epoch(
     metrics_tracker = MetricsTracker()
     
     pbar = tqdm(loader, desc=f'Epoch {epoch} [Train]')
+
+    all_preds = []
+    all_targets = []
+
     for batch_idx, batch in enumerate(pbar):
         batch = batch.to(device)
         
         optimizer.zero_grad()
         
         # Compute loss
-        loss, loss_dict = model.compute_total_loss(
+        pred, loss, loss_dict = model.compute_total_loss(
             x=batch.x,
             edge_index=batch.edge_index,
             batch=batch.batch,
@@ -121,6 +125,9 @@ def train_epoch(
             'train/eq_loss': loss_dict['eq_loss_total'],
             'train/eq_measure': loss_dict.get('eq_loss_measure_total', 0.0)
         })
+
+        all_preds.append(pred.detach().cpu())
+        all_targets.append(batch.y.detach().cpu())
         
         # Log batch metrics at intervals
         global_step = (epoch - 1) * len(loader) + batch_idx
@@ -152,9 +159,23 @@ def train_epoch(
             'eq': f"{loss_dict['eq_loss_total']:.4f}",
             'eq_est': f"{loss_dict.get('eq_loss_measure_total', 0.0):.4f}"
         })
-    
+
     # Get epoch averages
     epoch_metrics = metrics_tracker.get_averages()
+
+    preds = torch.cat(all_preds, dim=0)
+    targets = torch.cat(all_targets, dim=0)
+
+    # Compute additional regression metrics
+    mae = compute_mae(preds, targets)
+    rmse = compute_rmse(preds, targets)
+    r2 = compute_r2_score(preds, targets)
+
+    epoch_metrics.update({
+        'train/MAE': mae,
+        'train/RMSE': rmse,
+        'train/R2': r2
+    })
     
     return epoch_metrics
 
@@ -174,13 +195,16 @@ def evaluate(
     model.eval()
     
     metrics_tracker = MetricsTracker()
+
+    all_preds = []
+    all_targets = []
     
     pbar = tqdm(loader, desc=f'Epoch {epoch} [{split.capitalize()}]')
     for batch in pbar:
         batch = batch.to(device)
         
         # Compute loss
-        _, loss_dict = model.compute_total_loss(
+        pred, _, loss_dict = model.compute_total_loss(
             x=batch.x,
             edge_index=batch.edge_index,
             batch=batch.batch,
@@ -202,9 +226,27 @@ def evaluate(
             'eq': f"{loss_dict['eq_loss_total']:.4f}",
             'eq_est': f"{loss_dict.get('eq_loss_measure_total', 0.0):.4f}"
         })
-    
+
+        all_preds.append(pred.detach().cpu())
+        all_targets.append(batch.y.detach().cpu())
+
     # Get epoch averages
     epoch_metrics = metrics_tracker.get_averages()
+
+    preds = torch.cat(all_preds, dim=0)
+    targets = torch.cat(all_targets, dim=0)
+    
+    # Compute additional regression metrics
+    mae = compute_mae(preds, targets)
+    rmse = compute_rmse(preds, targets)
+    r2 = compute_r2_score(preds, targets)
+    
+    epoch_metrics = metrics_tracker.get_averages()
+    epoch_metrics.update({
+        f'{split}/MAE': mae,
+        f'{split}/RMSE': rmse,
+        f'{split}/R2': r2
+    })
     
     return epoch_metrics
 

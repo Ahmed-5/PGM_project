@@ -65,7 +65,7 @@ def evaluate(
     metrics_tracker = MetricsTracker()
     for batch in loader:
         batch = batch.to(device)
-        _, loss_dict = model.compute_total_loss(
+        _, _, loss_dict = model.compute_total_loss(
             x=batch.x,
             edge_index=batch.edge_index,
             batch=batch.batch,
