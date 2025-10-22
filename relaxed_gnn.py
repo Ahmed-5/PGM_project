@@ -152,7 +152,7 @@ class RelaxedEquivariantGNN(nn.Module):
             'layer_eq_loss_measures': layer_eq_loss_measures
         }
         
-        return pred, total_loss, loss_dict
+        return pred.squeeze(), total_loss, loss_dict
     
     def get_scheduler_alphas(self) -> torch.Tensor:
         """Get current alpha values from scheduler"""

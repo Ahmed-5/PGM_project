@@ -15,6 +15,7 @@ warnings.filterwarnings("ignore", category=UnsupportedFieldAttributeWarning)
 class ModelConfig:
     """Model architecture configuration"""
     in_channels: int = 28  # ZINC dataset default
+    # in_channels: int = 28+11  # degree one-hot for ZINC
     hidden_channels: int = 64
     out_channels: int = 1  # Regression task
     num_layers: int = 4

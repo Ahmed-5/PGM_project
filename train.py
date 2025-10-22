@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 from torch_geometric.loader import DataLoader
 from torch_geometric.datasets import ZINC, QM9
+from torch_geometric.transforms import OneHotDegree
 import numpy as np
 import os
 from tqdm import tqdm
@@ -15,7 +16,7 @@ import matplotlib.pyplot as plt
 
 from config import ExperimentConfig, get_config
 from relaxed_gnn import RelaxedEquivariantGNN
-from utils import set_seed, save_checkpoint, load_checkpoint, EarlyStopping, compute_mae, compute_rmse, compute_r2_score
+from utils import set_seed, save_checkpoint, load_checkpoint, EarlyStopping, compute_mae, compute_rmse, compute_r2_score, AtomDegreeOneHot, OneHotEncoder
 from logger import get_logger, MetricsTracker
 import warnings
 from pydantic.warnings import UnsupportedFieldAttributeWarning
@@ -25,19 +26,26 @@ warnings.filterwarnings("ignore", category=UnsupportedFieldAttributeWarning)
 def load_dataset(config: ExperimentConfig):
     """Load dataset based on configuration"""
     if config.data.dataset_name == 'ZINC':
+        # the transform should one-hot encode the node features
         train_dataset = ZINC(
             root=config.data.root,
             subset=config.data.subset,
+            # transform=AtomDegreeOneHot(num_atom_types=28, max_degree=10),
+            transform=OneHotEncoder(num_classes=28, feature_index=0),
             split='train'
         )
         val_dataset = ZINC(
             root=config.data.root,
             subset=config.data.subset,
+            # transform=AtomDegreeOneHot(num_atom_types=28, max_degree=10),
+            transform=OneHotEncoder(num_classes=28, feature_index=0),
             split='val'
         )
         test_dataset = ZINC(
             root=config.data.root,
             subset=config.data.subset,
+            # transform=AtomDegreeOneHot(num_atom_types=28, max_degree=10),
+            transform=OneHotEncoder(num_classes=28, feature_index=0),
             split='test'
         )
     elif config.data.dataset_name == 'QM9':
@@ -103,7 +111,7 @@ def train_epoch(
         batch = batch.to(device)
         
         optimizer.zero_grad()
-        
+
         # Compute loss
         pred, loss, loss_dict = model.compute_total_loss(
             x=batch.x,
@@ -299,7 +307,7 @@ def train(config: ExperimentConfig):
     # Initialize model
     print("\nInitializing model...")
     model = RelaxedEquivariantGNN(
-        in_channels=1, #config.model.in_channels,
+        in_channels=config.model.in_channels,
         hidden_channels=config.model.hidden_channels,
         out_channels=config.model.out_channels,
         num_layers=config.model.num_layers,
@@ -412,6 +420,12 @@ def train(config: ExperimentConfig):
               f"Val Eq: {val_metrics['val/eq_loss']:.4f}")
         print(f"  Eq Est: {train_metrics['train/eq_measure']:.4f} | "
               f"Val Eq Est: {val_metrics['val/eq_measure']:.4f}")
+        print(f"  Train MAE: {train_metrics['train/MAE']:.4f} | "
+              f"Val MAE: {val_metrics['val/MAE']:.4f}")
+        print(f"  Train RMSE: {train_metrics['train/RMSE']:.4f} | "
+              f"Val RMSE: {val_metrics['val/RMSE']:.4f}")
+        print(f"  Train R2: {train_metrics['train/R2']:.4f} | "
+              f"Val R2: {val_metrics['val/R2']:.4f}")
         print(f"  LR: {epoch_metrics['learning_rate']:.6f}")
         
         # Save best model

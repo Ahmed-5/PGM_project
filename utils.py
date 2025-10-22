@@ -3,6 +3,9 @@ Utility functions for training and evaluation
 """
 
 import torch
+import torch.nn.functional as F
+from torch_geometric.data import Data
+from torch_geometric.transforms import OneHotDegree
 import numpy as np
 import random
 import os
@@ -12,6 +15,34 @@ from pydantic.warnings import UnsupportedFieldAttributeWarning
 
 warnings.filterwarnings("ignore", category=UnsupportedFieldAttributeWarning)
 
+class OneHotEncoder:
+    def __init__(self, num_classes: int, feature_index: int):
+        self.num_classes = num_classes
+        self.feature_index = feature_index
+    
+    def __call__(self, data: Data):
+        features = data.x[:, self.feature_index].long()
+        one_hot = torch.nn.functional.one_hot(features, num_classes=self.num_classes).float()
+        # data.x = torch.cat([data.x, one_hot], dim=-1)
+        data.x = one_hot
+        return data
+
+class AtomDegreeOneHot:
+    def __init__(self, num_atom_types, max_degree):
+        self.num_atom_types = num_atom_types
+        self.degree_transform = OneHotDegree(max_degree)
+    
+    def __call__(self, data: Data):
+        atom_types = data.x[:, 0].long()  # assuming atom types are stored here
+        atom_one_hot = torch.nn.functional.one_hot(atom_types, num_classes=self.num_atom_types).float()
+        
+        # Replace data.x with one-hot atom types
+        data.x = atom_one_hot
+        
+        # Apply degree one-hot to augment data.x
+        data = self.degree_transform(data)
+        return data
+    
 def set_seed(seed: int = 42):
     """Set random seeds for reproducibility"""
     random.seed(seed)

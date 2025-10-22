@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 
 from config import ExperimentConfig, get_config
 from relaxed_gnn import RelaxedEquivariantGNN
-from utils import set_seed, load_checkpoint
+from utils import set_seed, load_checkpoint, compute_mae, compute_rmse, compute_r2_score
 from logger import get_logger, MetricsTracker
 
 def load_dataset(config: ExperimentConfig):
@@ -63,9 +63,13 @@ def evaluate(
     """Evaluate model"""
     model.eval()
     metrics_tracker = MetricsTracker()
+
+    all_preds = []
+    all_trues = []
+
     for batch in loader:
         batch = batch.to(device)
-        _, _, loss_dict = model.compute_total_loss(
+        pred, _, loss_dict = model.compute_total_loss(
             x=batch.x,
             edge_index=batch.edge_index,
             batch=batch.batch,
@@ -78,7 +82,22 @@ def evaluate(
             f'{split}/eq_loss': loss_dict['eq_loss_total']
         })
 
+        all_preds.append(pred.detach().cpu())
+        all_trues.append(batch.y.detach().cpu())
+
     epoch_metrics = metrics_tracker.get_averages()
+
+    all_preds = torch.cat(all_preds, dim=0)
+    all_trues = torch.cat(all_trues, dim=0)
+
+    mae = compute_mae(all_preds, all_trues)
+    rmse = compute_rmse(all_preds, all_trues)
+    r2 = compute_r2_score(all_preds, all_trues)
+
+    epoch_metrics[f'{split}/mae'] = mae
+    epoch_metrics[f'{split}/rmse'] = rmse
+    epoch_metrics[f'{split}/r2'] = r2
+
     return epoch_metrics
 
 def main(config_name: str = 'default', checkpoint_path: str = None, logger_type: str = 'none'):
@@ -141,6 +160,7 @@ def main(config_name: str = 'default', checkpoint_path: str = None, logger_type:
     print(f"Test Task Loss: {metrics['test/task_loss']:.4f}")
     print(f"Test Eq Loss:   {metrics['test/eq_loss']:.4f}")
     print(f"Test Eq Est:    {metrics['test/eq_measure']:.4f}")
+    print
     
     # Log metrics
     logger.log_metrics(metrics, step=0)
