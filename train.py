@@ -5,7 +5,7 @@ Training script for Relaxed Equivariant GNN with logging support
 import torch
 import torch.nn as nn
 from torch_geometric.loader import DataLoader
-from torch_geometric.datasets import ZINC, QM9
+from torch_geometric.datasets import ZINC, QM9, AQSOL
 from torch_geometric.transforms import OneHotDegree
 import numpy as np
 import os
@@ -30,26 +30,39 @@ def load_dataset(config: ExperimentConfig):
         train_dataset = ZINC(
             root=config.data.root,
             subset=config.data.subset,
-            # transform=AtomDegreeOneHot(num_atom_types=28, max_degree=10),
-            transform=OneHotEncoder(num_classes=28, feature_index=0),
+            transform=AtomDegreeOneHot(num_atom_types=28, max_degree=10),
+            # transform=OneHotEncoder(num_classes=28, feature_index=0),
             split='train'
         )
         val_dataset = ZINC(
             root=config.data.root,
             subset=config.data.subset,
-            # transform=AtomDegreeOneHot(num_atom_types=28, max_degree=10),
-            transform=OneHotEncoder(num_classes=28, feature_index=0),
+            transform=AtomDegreeOneHot(num_atom_types=28, max_degree=10),
+            # transform=OneHotEncoder(num_classes=28, feature_index=0),
             split='val'
         )
         test_dataset = ZINC(
             root=config.data.root,
             subset=config.data.subset,
-            # transform=AtomDegreeOneHot(num_atom_types=28, max_degree=10),
-            transform=OneHotEncoder(num_classes=28, feature_index=0),
+            transform=AtomDegreeOneHot(num_atom_types=28, max_degree=10),
+            # transform=OneHotEncoder(num_classes=28, feature_index=0),
             split='test'
         )
     elif config.data.dataset_name == 'QM9':
         dataset = QM9(root=config.data.root)
+        # Split dataset
+        train_size = int(0.8 * len(dataset))
+        val_size = int(0.1 * len(dataset))
+        test_size = len(dataset) - train_size - val_size
+        
+        train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(
+            dataset, [train_size, val_size, test_size]
+        )
+    elif config.data.dataset_name == 'AQSOL':
+        dataset = AQSOL(
+            root=config.data.root,
+            transform=AtomDegreeOneHot(num_atom_types=28, max_degree=10)
+        )
         # Split dataset
         train_size = int(0.8 * len(dataset))
         val_size = int(0.1 * len(dataset))
