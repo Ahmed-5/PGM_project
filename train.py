@@ -25,7 +25,37 @@ warnings.filterwarnings("ignore", category=UnsupportedFieldAttributeWarning)
 
 def load_dataset(config: ExperimentConfig):
     """Load dataset based on configuration"""
-    if config.data.dataset_name == 'ZINC':
+    # def load_dataset(config: ExperimentConfig):
+    # """Load dataset based on configuration"""
+    # NEW: Add QM9 support
+    if config.data.dataset_name == 'QM9':
+        from torch_geometric.datasets import QM9
+        
+        print("Loading QM9 dataset...")
+        dataset = QM9(root=config.data.root)
+        
+        # QM9 has 19 properties - we'll predict HOMO-LUMO gap (index 4)
+        print("Selecting target: HOMO-LUMO gap")
+        for data in dataset:
+            data.y = data.y[:, 4]  # Extract gap property
+        
+        # Split dataset
+        train_size = int(0.8 * len(dataset))
+        val_size = int(0.1 * len(dataset))
+        test_size = len(dataset) - train_size - val_size
+        
+        train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(
+            dataset, 
+            [train_size, val_size, test_size],
+            generator=torch.Generator().manual_seed(config.seed)
+        )
+        
+        print(f"✅ QM9 loaded: {len(dataset)} molecules")
+        print(f"   Train: {train_size}, Val: {val_size}, Test: {test_size}")
+        
+        return train_dataset, val_dataset, test_dataset
+    
+    elif config.data.dataset_name == 'ZINC':
         # the transform should one-hot encode the node features
         train_dataset = ZINC(
             root=config.data.root,
@@ -48,16 +78,16 @@ def load_dataset(config: ExperimentConfig):
             # transform=OneHotEncoder(num_classes=28, feature_index=0),
             split='test'
         )
-    elif config.data.dataset_name == 'QM9':
-        dataset = QM9(root=config.data.root)
-        # Split dataset
-        train_size = int(0.8 * len(dataset))
-        val_size = int(0.1 * len(dataset))
-        test_size = len(dataset) - train_size - val_size
+    # elif config.data.dataset_name == 'QM9':
+    #     dataset = QM9(root=config.data.root)
+    #     # Split dataset
+    #     train_size = int(0.8 * len(dataset))
+    #     val_size = int(0.1 * len(dataset))
+    #     test_size = len(dataset) - train_size - val_size
         
-        train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(
-            dataset, [train_size, val_size, test_size]
-        )
+    #     train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(
+    #         dataset, [train_size, val_size, test_size]
+    #     )
     elif config.data.dataset_name == 'AQSOL':
         dataset = AQSOL(
             root=config.data.root,

@@ -43,7 +43,7 @@ class TrainingConfig:
 @dataclass
 class DataConfig:
     """Dataset configuration"""
-    dataset_name: Literal['ZINC', 'QM9', 'AQSOL'] = 'ZINC'
+    dataset_name: Literal['ZINC', 'QM9', 'AQSOL'] = 'QM9'
     subset: bool = True  # Use ZINC-12k
     root: str = './data'
     num_workers: int = 4
