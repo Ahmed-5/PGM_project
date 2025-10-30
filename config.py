@@ -58,7 +58,7 @@ class EquivarianceLossConfig:
     
     num_samples: int = 3
     normalize: bool = True
-    feature_type: Literal['invariant', 'equivariant'] = 'invariant'
+    feature_type: Literal['invariant', 'equivariant'] = 'invariant' # 'invariant': features unchanged or 'equivariant': features transform
     max_translation: float = 5.0
     scale_range: Tuple[float, float] = (0.5, 2.0)
     use_adaptive_weighting: bool = False
@@ -97,7 +97,7 @@ class TrainingConfig:
     """Training hyperparameters with modern best practices"""
     
     batch_size: int = 32
-    num_epochs: int = 100
+    num_epochs: int = 1
     learning_rate: float = 0.001
     weight_decay: float = 1e-5
     grad_clip: float = 1.0
@@ -146,6 +146,7 @@ class LoggingConfig:
     wandb_project: str = 'equivariant-gnns'
     wandb_entity: Optional[str] = None
     wandb_name: Optional[str] = None
+    wandb_notes: Optional[str] = None
     wandb_tags: List[str] = field(default_factory=list)
     wandb_mode: Literal['online', 'offline', 'disabled'] = 'online'
     
