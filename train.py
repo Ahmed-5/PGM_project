@@ -16,7 +16,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 
 from config import ExperimentConfig, get_config
-from baseline_gnn import BaseGNN
+# from baseline_gnn import BaseGNN
+from equivariant_gnn import BaseGNN
 from equivariance_loss import EquivarianceLoss
 from utils import (set_seed, save_checkpoint, load_checkpoint, EarlyStopping, 
                    compute_mae, compute_rmse, compute_r2_score, AtomDegreeOneHot)
@@ -24,62 +25,9 @@ from logger import get_logger, MetricsTracker
 import warnings
 from pydantic.warnings import UnsupportedFieldAttributeWarning
 
+from load_dataset import load_dataset
+
 warnings.filterwarnings("ignore", category=UnsupportedFieldAttributeWarning)
-
-
-def load_dataset(config: ExperimentConfig):
-    """Load dataset based on configuration"""
-    if config.data.dataset_name == 'ZINC':
-        train_dataset = ZINC(
-            root=config.data.root,
-            subset=config.data.subset,
-            transform=AtomDegreeOneHot(num_atom_types=28, max_degree=10),
-            split='train'
-        )
-        
-        val_dataset = ZINC(
-            root=config.data.root,
-            subset=config.data.subset,
-            transform=AtomDegreeOneHot(num_atom_types=28, max_degree=10),
-            split='val'
-        )
-        
-        test_dataset = ZINC(
-            root=config.data.root,
-            subset=config.data.subset,
-            transform=AtomDegreeOneHot(num_atom_types=28, max_degree=10),
-            split='test'
-        )
-        
-    elif config.data.dataset_name == 'QM9':
-        dataset = QM9(root=config.data.root)
-        # Split dataset
-        train_size = int(0.8 * len(dataset))
-        val_size = int(0.1 * len(dataset))
-        test_size = len(dataset) - train_size - val_size
-        train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(
-            dataset, [train_size, val_size, test_size]
-        )
-        
-    elif config.data.dataset_name == 'AQSOL':
-        dataset = AQSOL(
-            root=config.data.root,
-            transform=AtomDegreeOneHot(num_atom_types=28, max_degree=10)
-        )
-        
-        # Split dataset
-        train_size = int(0.8 * len(dataset))
-        val_size = int(0.1 * len(dataset))
-        test_size = len(dataset) - train_size - val_size
-        train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(
-            dataset, [train_size, val_size, test_size]
-        )
-        
-    else:
-        raise ValueError(f"Unknown dataset: {config.data.dataset_name}")
-    
-    return train_dataset, val_dataset, test_dataset
-
 
 def initialize_equivariance_losses(config: ExperimentConfig):
     """Initialize multiple equivariance loss functions based on config"""
@@ -98,33 +46,23 @@ def initialize_equivariance_losses(config: ExperimentConfig):
     return eq_losses
 
 
-def compute_equivariance_losses(
-    model: BaseGNN,
-    batch,
-    eq_losses: dict,
-    config: ExperimentConfig
-):
-    """Compute equivariance losses for all configured symmetry groups"""
+def compute_equivariance_losses(model, batch, eq_losses, config):
+    """Compute equivariance losses - optimized for GPU"""
     total_eq_loss = 0.0
     eq_loss_dict = {}
     
-    # Create network function for equivariance testing
     def network_fn(pos, feat, edges, b):
-        with torch.enable_grad():
-            return model(feat, pos, edges, b, return_layer_outputs=False)
+        return model(feat, pos, edges, b, return_node_embeddings=True)
     
-    # Compute loss for each symmetry group
     for group_type, eq_loss_fn in eq_losses.items():
         weight = config.equivariance.group_weights.get(group_type, 0.1)
         
-        # Get positions if needed (or use dummy positions for permutation-only)
         if config.data.use_positions and hasattr(batch, 'pos'):
             positions = batch.pos
         else:
-            # Create dummy 3D positions for models that don't use them
-            positions = torch.randn(batch.x.shape[0], 3, device=batch.x.device)
+            positions = torch.zeros(batch.x.shape[0], 3, device=batch.x.device)
         
-        # Compute equivariance loss
+        # Single GPU forward pass for all samples
         eq_loss = eq_loss_fn(
             network_fn=network_fn,
             positions=positions,
@@ -136,6 +74,7 @@ def compute_equivariance_losses(
         weighted_loss = weight * eq_loss
         total_eq_loss += weighted_loss
         
+        # Defer .item() until after backward
         eq_loss_dict[f'eq_loss/{group_type}'] = eq_loss.item()
         eq_loss_dict[f'eq_loss_weighted/{group_type}'] = weighted_loss.item()
     
@@ -172,9 +111,19 @@ def train_epoch(
             # For models that don't use positions
             dummy_pos = torch.zeros(batch.x.shape[0], 3, device=device)
             pred = model(batch.x, dummy_pos, batch.edge_index, batch.batch)
+
+        target = batch.y
+
+        # Squeeze both to match dimensions
+        if pred.dim() == 2 and pred.shape[1] == 1:
+            pred = pred.squeeze(1)  # [32, 1] -> [32]
+        if target.dim() == 2 and target.shape[1] == 1:
+            target = target.squeeze(1)
+
+        assert pred.shape == target.shape  # Safety check
         
         # Task loss
-        task_loss = task_loss_fn(pred, batch.y)
+        task_loss = task_loss_fn(pred, target)
         
         # Equivariance losses
         eq_loss_total, eq_loss_dict = compute_equivariance_losses(
@@ -421,11 +370,11 @@ def train(config: ExperimentConfig):
     )
     
     # Learning rate scheduler
-    if config.training.scheduler_lr == 'step':
+    if config.scheduler.lr_schedule == 'step':
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             optimizer, step_size=50, gamma=0.5
         )
-    elif config.training.scheduler_lr == 'cosine':
+    elif config.scheduler.lr_schedule == 'cosine':
         lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer, T_max=config.training.num_epochs
         )

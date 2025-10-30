@@ -1,181 +1,170 @@
 """
-Configuration file for Relaxed Equivariance GNN experiments
-Updated to support multiple model architectures and symmetry groups
+Configuration system for Equivariant GNN experiments
+Enhanced with validation, type safety, and flexible presets
 """
 
+import os
 import torch
-from dataclasses import dataclass, field
-from typing import Literal, Optional, List
-import warnings
+from dataclasses import dataclass, field, asdict
+from typing import Literal, Optional, List, Dict, Any, Tuple
+from pathlib import Path
 from datetime import datetime
-from pydantic.warnings import UnsupportedFieldAttributeWarning
-
-warnings.filterwarnings("ignore", category=UnsupportedFieldAttributeWarning)
-
+import json
 
 @dataclass
 class ModelConfig:
-    """Model architecture configuration"""
-    # Basic architecture
-    in_channels: int = 28 + 11  # degree one-hot for ZINC
+    """Model architecture configuration with validation"""
+    
+    in_channels: int = 12
     hidden_channels: int = 64
-    out_channels: int = 1  # Regression task
+    out_channels: int = 1
     num_layers: int = 4
     dropout: float = 0.5
     spatial_dim: int = 3
     
-    # Model type selection (now supports all architectures)
     model_type: Literal[
         'raw_mlp', 'transformer', 'gcn', 'gin', 'graphsage',
         'schnet', 'dimenet', 'egnn', 'painn',
         'vector_neuron', 'se3_transformer', 'nequip', 'clofnet'
     ] = 'gcn'
     
-    # Model-specific parameters
-    num_heads: int = 8  # For Transformer, SE3Transformer
-    num_gaussians: int = 50  # For SchNet, DimeNet, NequIP
-    num_spherical: int = 7  # For DimeNet
-    cutoff: float = 10.0  # For distance-based models
-    update_coords: bool = False  # For EGNN
-    max_ell: int = 2  # For NequIP (angular momentum)
-    num_degrees: int = 2  # For SE3Transformer
+    # Architecture-specific parameters
+    num_heads: int = 8
+    num_gaussians: int = 50
+    num_spherical: int = 7
+    cutoff: float = 10.0
+    update_coords: bool = False
+    max_ell: int = 2
+    num_degrees: int = 2
+    use_layer_norm: bool = False
+    use_batch_norm: bool = True
+    
+    def __post_init__(self):
+        if self.num_layers < 1:
+            raise ValueError(f"num_layers must be >= 1, got {self.num_layers}")
+        if not 0 <= self.dropout < 1:
+            raise ValueError(f"dropout must be in [0, 1), got {self.dropout}")
 
 
 @dataclass
 class EquivarianceLossConfig:
-    """Equivariance loss configuration"""
-    # Which symmetry groups to enforce
-    symmetry_groups: List[str] = field(default_factory=lambda: ['permutation'])
+    """Equivariance loss with adaptive weighting support"""
     
-    # Weights for each symmetry group
-    group_weights: dict = field(default_factory=lambda: {
-        'permutation': 0.1,
-        'so3': 0.1,
-        'o3': 0.1,
-        'se3': 0.1,
-        'e3': 0.1,
-        'translation': 0.1,
-        'reflection': 0.1,
-        'scaling': 0.05
+    symmetry_groups: List[str] = field(default_factory=lambda: ['permutation'])
+    group_weights: Dict[str, float] = field(default_factory=lambda: {
+        'permutation': 0.1, 'so3': 0.1, 'o3': 0.1, 'se3': 0.1,
+        'e3': 0.1, 'translation': 0.1, 'reflection': 0.1, 'scaling': 0.05
     })
     
-    # Loss computation settings
-    num_samples: int = 3  # Number of random transformations per group
-    normalize: bool = True  # Normalize by feature magnitude
+    num_samples: int = 3
+    normalize: bool = True
     feature_type: Literal['invariant', 'equivariant'] = 'invariant'
     max_translation: float = 5.0
-    scale_range: tuple = (0.5, 2.0)
+    scale_range: Tuple[float, float] = (0.5, 2.0)
+    use_adaptive_weighting: bool = False
+    min_weight: float = 0.01
+    max_weight: float = 1.0
+    
+    def __post_init__(self):
+        valid_groups = {
+            'permutation', 'so3', 'o3', 'se3', 'e3',
+            'translation', 'reflection', 'scaling'
+        }
+        for group in self.symmetry_groups:
+            if group not in valid_groups:
+                raise ValueError(f"Invalid symmetry group '{group}'")
 
 
 @dataclass
 class SchedulerConfig:
-    """Depth-adaptive scheduler configuration"""
-    schedule_type: Literal['constant', 'exponential', 'linear', 'learnable'] = 'exponential'
-    alpha_0: float = 1.0  # Initial equivariance weight
-    beta: float = 0.1  # Exponential decay rate
-    gamma: float = 0.1  # Linear decay rate
+    """Scheduling for both learning rate and equivariance weights"""
+    
+    schedule_type: Literal[
+        'constant', 'exponential', 'linear', 'inverse', 'u_shaped', 'learnable'
+    ] = 'exponential'
+    alpha_0: float = 1.0
+    beta: float = 0.1
+    gamma: float = 0.1
+    
+    lr_schedule: Literal['step', 'cosine', 'plateau', 'exponential', 'none'] = 'cosine'
+    lr_step_size: int = 50
+    lr_gamma: float = 0.5
+    lr_warmup_epochs: int = 5
 
 
 @dataclass
 class TrainingConfig:
-    """Training hyperparameters"""
+    """Training hyperparameters with modern best practices"""
+    
     batch_size: int = 32
     num_epochs: int = 100
     learning_rate: float = 0.001
     weight_decay: float = 1e-5
-    scheduler_lr: Literal['step', 'cosine', 'none'] = 'step'
-    patience: int = 20  # Early stopping
-    grad_clip: float = 1.0  # Gradient clipping
+    grad_clip: float = 1.0
+    
+    optimizer: Literal['adam', 'adamw', 'sgd', 'rmsprop'] = 'adamw'
+    adam_betas: Tuple[float, float] = (0.9, 0.999)
+    adam_eps: float = 1e-8
+    
+    patience: int = 20
+    min_delta: float = 1e-4
+    use_amp: bool = False  # Mixed precision training
+    accumulation_steps: int = 1
 
 
 @dataclass
 class DataConfig:
     """Dataset configuration"""
+    
     dataset_name: Literal[
-        'ZINC', 'QM9', 'QM7', 'AQSOL',  # Original
+        'ZINC', 'QM9', 'QM7b', 'AQSOL',  # Original
         'MD17', 'MD22', 'rMD17', 'OC20',  # Molecular dynamics
         'ISO17', 'Molecule3D', 'ATOM3D',  # Special molecular
         'ModelNet40', 'ShapeNet', 'PartNet'  # Point clouds
     ] = 'ZINC'
-    
+
     subset: bool = True
     root: str = './data'
     num_workers: int = 4
     use_positions: bool = False
     
-    # MD17/MD22 specific
-    md17_molecule: Literal[
-        'aspirin', 'benzene', 'ethanol', 'maleic_acid',
-        'naphthalene', 'salicylic_acid', 'toluene', 'uracil'
-    ] = 'aspirin'
+    md17_molecule: str = 'aspirin'
+    qm9_target: int = 7
     
-    # OC20 specific
-    oc20_task: Literal['s2ef', 'is2re', 'is2rs'] = 's2ef'
-    
-    # QM9 target property
-    qm9_target: int = 7  # HOMO-LUMO gap
-    
-    # Point cloud specific
-    modelnet_num_points: int = 1024
-    use_normals: bool = False
+    use_augmentation: bool = False
+    train_split: float = 0.8
+    val_split: float = 0.1
+    test_split: float = 0.1
 
-
-# Dataset symmetry requirements
-DATASET_SYMMETRIES = {
-    'ZINC': ['permutation'],
-    'QM9': ['permutation', 'e3'],
-    'QM7': ['permutation', 'e3'],
-    'MD17': ['permutation', 'e3'],  # Forces require equivariance
-    'MD22': ['permutation', 'e3'],
-    'rMD17': ['permutation', 'e3'],
-    'OC20': ['permutation', 'se3'],  # Periodic systems
-    'ISO17': ['permutation', 'e3'],
-    'ModelNet40': ['so3'],  # Rigid body rotations
-    'ShapeNet': ['so3', 'reflection'],  # Objects can have mirrors
-    'PartNet': ['permutation', 'so3'],  # Part permutations + rotations
-}
-
-# Recommended model types per dataset
-DATASET_MODEL_RECOMMENDATIONS = {
-    'ZINC': ['gcn', 'gin', 'graphsage'],  # Graph only
-    'QM9': ['schnet', 'dimenet', 'painn'],  # 3D geometry
-    'MD17': ['egnn', 'painn', 'nequip'],  # Force prediction
-    'MD22': ['painn', 'nequip'],  # Larger molecules
-    'OC20': ['gemnet', 'escn'],  # Specialized for catalysts
-    'ModelNet40': ['vector_neuron', 'se3_transformer'],  # Point clouds
-    'ShapeNet': ['vector_neuron', 'clofnet'],  # 3D shapes
-}
 
 @dataclass
 class LoggingConfig:
-    """Logging configuration"""
-    logger_type: Literal['wandb', 'tensorboard', 'none'] = 'none'
+    """Comprehensive logging configuration"""
     
-    # Weights & Biases settings
-    wandb_project: str = 'relaxed-equivariance-gnn'
+    logger_type: Literal['wandb', 'tensorboard', 'both', 'none'] = 'none'
+    
+    wandb_project: str = 'equivariant-gnns'
     wandb_entity: Optional[str] = None
     wandb_name: Optional[str] = None
-    wandb_tags: list = None
-    wandb_notes: Optional[str] = None
+    wandb_tags: List[str] = field(default_factory=list)
+    wandb_mode: Literal['online', 'offline', 'disabled'] = 'online'
     
-    # TensorBoard settings
     tensorboard_dir: str = './runs'
     
-    # General logging settings
     log_interval: int = 10
     log_gradients: bool = False
-    log_layer_outputs: bool = True
-    log_equivariance_metrics: bool = True  # Log per-group equivariance violations
+    log_equivariance_metrics: bool = True
+    save_checkpoint: bool = True
+    checkpoint_interval: int = 10
+    save_best_only: bool = True
+    verbose: bool = True
     save_model_artifact: bool = True
-    
-    def __post_init__(self):
-        if self.wandb_tags is None:
-            self.wandb_tags = []
 
 
 @dataclass
 class ExperimentConfig:
-    """Full experiment configuration"""
+    """Complete experiment configuration"""
+    
     model: ModelConfig = field(default_factory=ModelConfig)
     equivariance: EquivarianceLossConfig = field(default_factory=EquivarianceLossConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
@@ -183,239 +172,105 @@ class ExperimentConfig:
     data: DataConfig = field(default_factory=DataConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     
-    seed: int = 42
-    device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
-    
-    # Experiment metadata
     experiment_name: str = 'default'
-    timestamp: str = field(default_factory=lambda: datetime.now().strftime('%Y%m%d_%H%M%S'))
+    seed: int = 42
+    device: str = field(default_factory=lambda: 'cuda' if torch.cuda.is_available() else 'cpu')
+    # device: str = 'cpu'
+    deterministic: bool = True
+    
     checkpoint_dir: str = ''
+    output_dir: str = ''
+    timestamp: str = field(default_factory=lambda: datetime.now().strftime('%Y%m%d_%H%M%S'))
     
     def __post_init__(self):
         if not self.checkpoint_dir:
             self.checkpoint_dir = f'./checkpoints/{self.experiment_name}_{self.timestamp}'
+        if not self.output_dir:
+            self.output_dir = f'./outputs/{self.experiment_name}_{self.timestamp}'
+        
+        Path(self.checkpoint_dir).mkdir(parents=True, exist_ok=True)
+        Path(self.output_dir).mkdir(parents=True, exist_ok=True)
+        
+        # Validate model-data compatibility
+        position_models = {
+            'schnet', 'dimenet', 'egnn', 'painn',
+            'vector_neuron', 'se3_transformer', 'nequip', 'clofnet'
+        }
+        if self.model.model_type in position_models and not self.data.use_positions:
+            raise ValueError(
+                f"Model '{self.model.model_type}' requires 3D positions. "
+                "Set data.use_positions=True"
+            )
     
-    def to_dict(self):
-        """Convert to dictionary for logging"""
+    def to_dict(self) -> Dict[str, Any]:
         return {
-            'model': vars(self.model),
-            'equivariance': {
-                'symmetry_groups': self.equivariance.symmetry_groups,
-                'group_weights': self.equivariance.group_weights,
-                'num_samples': self.equivariance.num_samples,
-                'normalize': self.equivariance.normalize,
-                'feature_type': self.equivariance.feature_type,
-            },
-            'scheduler': vars(self.scheduler),
-            'training': vars(self.training),
-            'data': vars(self.data),
-            'logging': vars(self.logging),
+            'model': asdict(self.model),
+            'equivariance': asdict(self.equivariance),
+            'scheduler': asdict(self.scheduler),
+            'training': asdict(self.training),
+            'data': asdict(self.data),
+            'logging': asdict(self.logging),
+            'experiment_name': self.experiment_name,
             'seed': self.seed,
             'device': self.device,
-            'experiment_name': self.experiment_name,
-            'timestamp': self.timestamp,
-            'checkpoint_dir': self.checkpoint_dir,
         }
+    
+    def save(self, path: Optional[str] = None):
+        if path is None:
+            path = Path(self.output_dir) / 'config.json'
+        with open(path, 'w') as f:
+            json.dump(self.to_dict(), f, indent=2)
+    
+    @classmethod
+    def load(cls, path: str) -> 'ExperimentConfig':
+        with open(path, 'r') as f:
+            config_dict = json.load(f)
+        return cls(
+            model=ModelConfig(**config_dict['model']),
+            equivariance=EquivarianceLossConfig(**config_dict['equivariance']),
+            scheduler=SchedulerConfig(**config_dict['scheduler']),
+            training=TrainingConfig(**config_dict['training']),
+            data=DataConfig(**config_dict['data']),
+            logging=LoggingConfig(**config_dict['logging']),
+            experiment_name=config_dict['experiment_name'],
+            seed=config_dict['seed'],
+            device=config_dict['device'],
+        )
 
 
-def get_config(config_name: str = 'default') -> ExperimentConfig:
-    """Factory function for different experiment configurations"""
+def get_config(preset: str = 'default') -> ExperimentConfig:
+    """Factory for preset configurations"""
     
-    if config_name == 'default':
-        config = ExperimentConfig()
-        config.experiment_name = 'default'
-        return config
+    presets = {
+        'baseline': lambda: ExperimentConfig(
+            experiment_name='baseline_gcn',
+            model=ModelConfig(model_type='gcn'),
+            scheduler=SchedulerConfig(alpha_0=0.0),
+        ),
+        'e3_equivariant': lambda: ExperimentConfig(
+            experiment_name='e3_egnn',
+            model=ModelConfig(model_type='egnn', update_coords=True),
+            equivariance=EquivarianceLossConfig(
+                symmetry_groups=['e3'],
+                group_weights={'e3': 0.1}
+            ),
+            data=DataConfig(use_positions=True),
+        ),
+        'multi_symmetry': lambda: ExperimentConfig(
+            experiment_name='multi_sym',
+            model=ModelConfig(model_type='egnn'),
+            equivariance=EquivarianceLossConfig(
+                symmetry_groups=['permutation', 'so3', 'translation'],
+                group_weights={'permutation': 0.05, 'so3': 0.1, 'translation': 0.1},
+                use_adaptive_weighting=True,
+            ),
+            data=DataConfig(use_positions=True),
+        ),
+    }
     
-    elif config_name == 'baseline':
-        """Standard GNN without equivariance loss"""
-        config = ExperimentConfig()
-        config.model.model_type = 'gcn'
-        config.scheduler.alpha_0 = 0.0
-        config.experiment_name = 'baseline_gcn'
-        config.logging.wandb_tags = ['baseline', 'no-equivariance', 'gcn']
-        return config
-    
-    elif config_name == 'permutation_only':
-        """Standard GNN with only permutation equivariance loss"""
-        config = ExperimentConfig()
-        config.model.model_type = 'gin'
-        config.equivariance.symmetry_groups = ['permutation']
-        config.equivariance.group_weights = {'permutation': 0.1}
-        config.scheduler.schedule_type = 'exponential'
-        config.experiment_name = 'permutation_only'
-        config.logging.wandb_tags = ['permutation', 'gin']
-        return config
-    
-    elif config_name == 'e3_invariant':
-        """E(3)-invariant model (SchNet)"""
-        config = ExperimentConfig()
-        config.model.model_type = 'schnet'
-        config.data.use_positions = True
-        config.equivariance.symmetry_groups = ['so3', 'translation', 'reflection']
-        config.equivariance.group_weights = {
-            'so3': 0.1,
-            'translation': 0.1,
-            'reflection': 0.05
-        }
-        config.experiment_name = 'e3_invariant_schnet'
-        config.logging.wandb_tags = ['e3-invariant', 'schnet', 'geometric']
-        return config
-    
-    elif config_name == 'e3_equivariant':
-        """E(3)-equivariant model (EGNN)"""
-        config = ExperimentConfig()
-        config.model.model_type = 'egnn'
-        config.model.update_coords = True
-        config.data.use_positions = True
-        config.equivariance.symmetry_groups = ['e3']
-        config.equivariance.group_weights = {'e3': 0.1}
-        config.experiment_name = 'e3_equivariant_egnn'
-        config.logging.wandb_tags = ['e3-equivariant', 'egnn', 'coordinate-update']
-        return config
-    
-    elif config_name == 'so3_equivariant':
-        """SO(3)-equivariant model (Vector Neurons)"""
-        config = ExperimentConfig()
-        config.model.model_type = 'vector_neuron'
-        config.data.use_positions = True
-        config.equivariance.symmetry_groups = ['so3', 'translation']
-        config.equivariance.group_weights = {
-            'so3': 0.15,
-            'translation': 0.1
-        }
-        config.experiment_name = 'so3_equivariant_vn'
-        config.logging.wandb_tags = ['so3-equivariant', 'vector-neurons']
-        return config
-    
-    elif config_name == 'se3_transformer':
-        """SE(3)-equivariant transformer"""
-        config = ExperimentConfig()
-        config.model.model_type = 'se3_transformer'
-        config.model.num_heads = 8
-        config.data.use_positions = True
-        config.equivariance.symmetry_groups = ['se3']
-        config.equivariance.group_weights = {'se3': 0.1}
-        config.training.learning_rate = 0.0005  # Lower LR for attention
-        config.experiment_name = 'se3_transformer'
-        config.logging.wandb_tags = ['se3-equivariant', 'attention', 'transformer']
-        return config
-    
-    elif config_name == 'multi_symmetry':
-        """Multiple symmetry groups with different weights"""
-        config = ExperimentConfig()
-        config.model.model_type = 'egnn'
-        config.data.use_positions = True
-        config.equivariance.symmetry_groups = ['permutation', 'so3', 'translation', 'scaling']
-        config.equivariance.group_weights = {
-            'permutation': 0.05,
-            'so3': 0.1,
-            'translation': 0.1,
-            'scaling': 0.03
-        }
-        config.scheduler.schedule_type = 'exponential'
-        config.scheduler.alpha_0 = 1.5
-        config.experiment_name = 'multi_symmetry_egnn'
-        config.logging.wandb_tags = ['multi-symmetry', 'combined-loss']
-        return config
-    
-    elif config_name == 'depth_adaptive_e3':
-        """Depth-adaptive equivariance for E(3) model"""
-        config = ExperimentConfig()
-        config.model.model_type = 'painn'
-        config.model.num_layers = 8
-        config.data.use_positions = True
-        config.equivariance.symmetry_groups = ['e3']
-        config.scheduler.schedule_type = 'exponential'
-        config.scheduler.alpha_0 = 2.0
-        config.scheduler.beta = 0.15
-        config.experiment_name = 'depth_adaptive_painn'
-        config.logging.wandb_tags = ['depth-adaptive', 'painn', 'e3']
-        return config
-    
-    elif config_name == 'learnable_weights':
-        """Learnable equivariance weights"""
-        config = ExperimentConfig()
-        config.model.model_type = 'nequip'
-        config.data.use_positions = True
-        config.equivariance.symmetry_groups = ['e3']
-        config.scheduler.schedule_type = 'learnable'
-        config.training.num_epochs = 150
-        config.training.learning_rate = 0.0005
-        config.experiment_name = 'learnable_weights_nequip'
-        config.logging.wandb_tags = ['learnable', 'nequip', 'meta-learning']
-        config.logging.log_gradients = True
-        return config
-    
-    elif config_name == 'ablation_no_symmetry':
-        """Ablation: No geometric symmetry (uses raw coords)"""
-        config = ExperimentConfig()
-        config.model.model_type = 'transformer'
-        config.data.use_positions = True
-        config.scheduler.alpha_0 = 0.0
-        config.experiment_name = 'ablation_no_symmetry'
-        config.logging.wandb_tags = ['ablation', 'no-symmetry', 'baseline']
-        return config
-    
-    elif config_name == 'comparison_all_models':
-        """For systematic comparison across all models"""
-        configs = []
-        model_types = ['gcn', 'schnet', 'egnn', 'vector_neuron', 'se3_transformer', 'painn', 'nequip']
-        
-        for model_type in model_types:
-            config = ExperimentConfig()
-            config.model.model_type = model_type
-            
-            # Set appropriate symmetry groups for each model
-            if model_type in ['gcn', 'gin', 'graphsage']:
-                config.equivariance.symmetry_groups = ['permutation']
-                config.data.use_positions = False
-            elif model_type in ['schnet', 'dimenet']:
-                config.equivariance.symmetry_groups = ['so3', 'translation']
-                config.data.use_positions = True
-            elif model_type in ['egnn', 'painn', 'nequip']:
-                config.equivariance.symmetry_groups = ['e3']
-                config.data.use_positions = True
-            elif model_type == 'vector_neuron':
-                config.equivariance.symmetry_groups = ['so3', 'translation']
-                config.data.use_positions = True
-            elif model_type == 'se3_transformer':
-                config.equivariance.symmetry_groups = ['se3']
-                config.data.use_positions = True
-            
-            config.experiment_name = f'comparison_{model_type}'
-            config.logging.wandb_tags = ['comparison', model_type]
-            configs.append(config)
-        
-        return configs
-    
+    if preset == 'default':
+        return ExperimentConfig()
+    elif preset in presets:
+        return presets[preset]()
     else:
-        raise ValueError(f"Unknown config name: {config_name}. Available configs: "
-                        f"default, baseline, permutation_only, e3_invariant, e3_equivariant, "
-                        f"so3_equivariant, se3_transformer, multi_symmetry, depth_adaptive_e3, "
-                        f"learnable_weights, ablation_no_symmetry, comparison_all_models")
-
-
-# Quick access to common configurations
-CONFIGS = {
-    'baseline': get_config('baseline'),
-    'gcn': get_config('permutation_only'),
-    'schnet': get_config('e3_invariant'),
-    'egnn': get_config('e3_equivariant'),
-    'painn': get_config('depth_adaptive_e3'),
-    'vector_neuron': get_config('so3_equivariant'),
-    'se3_transformer': get_config('se3_transformer'),
-}
-
-
-if __name__ == "__main__":
-    # Test configurations
-    print("Testing configuration system...\n")
-    
-    for name in ['baseline', 'e3_equivariant', 'multi_symmetry']:
-        config = get_config(name)
-        print(f"Config: {name}")
-        print(f"  Model: {config.model.model_type}")
-        print(f"  Symmetries: {config.equivariance.symmetry_groups}")
-        print(f"  Weights: {config.equivariance.group_weights}")
-        print(f"  Use positions: {config.data.use_positions}")
-        print()
+        raise ValueError(f"Unknown preset '{preset}'")

@@ -1,20 +1,16 @@
 """
-Depth-adaptive scheduling strategies for layer-wise equivariance weights
+Depth-adaptive and learning rate scheduling
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-import warnings
-from pydantic.warnings import UnsupportedFieldAttributeWarning
+from typing import Optional, List
 
-warnings.filterwarnings("ignore", category=UnsupportedFieldAttributeWarning)
 
 class DepthScheduler(nn.Module):
-    """
-    Schedules layer-wise equivariance weights α_l based on depth
-    """
+    """Layer-wise equivariance weight scheduling"""
     
     def __init__(
         self,
@@ -25,16 +21,13 @@ class DepthScheduler(nn.Module):
         gamma: float = 0.1
     ):
         super().__init__()
-        
         self.num_layers = num_layers
         self.schedule_type = schedule_type
         self.alpha_0 = alpha_0
         self.beta = beta
         self.gamma = gamma
         
-        # For learnable schedule, initialize parameters
         if schedule_type == 'learnable':
-            # Initialize with exponential decay as prior
             init_values = alpha_0 * np.exp(-beta * np.arange(num_layers))
             self.alpha = nn.Parameter(torch.tensor(init_values, dtype=torch.float32))
         else:
@@ -42,7 +35,7 @@ class DepthScheduler(nn.Module):
             self._compute_schedule()
     
     def _compute_schedule(self):
-        """Pre-compute schedule for non-learnable types"""
+        """Pre-compute fixed schedules"""
         if self.schedule_type == 'constant':
             self.alpha.fill_(self.alpha_0)
         
@@ -55,57 +48,95 @@ class DepthScheduler(nn.Module):
                 self.alpha[l] = max(0.0, self.alpha_0 - self.gamma * l)
         
         elif self.schedule_type == 'inverse':
-            # 1 / (1 + β*l) decay
             for l in range(self.num_layers):
                 self.alpha[l] = self.alpha_0 / (1.0 + self.beta * l)
         
         elif self.schedule_type == 'u_shaped':
-            # Higher weight on early and late layers, lower in middle
             mid = self.num_layers // 2
             for l in range(self.num_layers):
-                distance_from_mid = abs(l - mid) / mid
+                distance_from_mid = abs(l - mid) / max(mid, 1)
                 self.alpha[l] = self.alpha_0 * (0.5 + 0.5 * distance_from_mid)
     
     def get_alpha(self, layer_idx: int) -> torch.Tensor:
-        """
-        Get equivariance weight for specific layer
-        
-        Args:
-            layer_idx: Layer index (0-indexed)
-            
-        Returns:
-            α_l for this layer
-        """
+        """Get weight for specific layer"""
         if self.schedule_type == 'learnable':
-            # Apply softplus to ensure positivity
             return F.softplus(self.alpha[layer_idx])
-        else:
-            return self.alpha[layer_idx]
+        return self.alpha[layer_idx]
     
     def get_all_alphas(self) -> torch.Tensor:
         """Get all layer weights"""
         if self.schedule_type == 'learnable':
             return F.softplus(self.alpha)
-        else:
-            return self.alpha.clone()
+        return self.alpha.clone()
     
     def forward(self, layer_idx: int) -> torch.Tensor:
-        """Forward call returns alpha for given layer"""
         return self.get_alpha(layer_idx)
+
+
+class WarmupScheduler:
+    """Learning rate warmup scheduler"""
     
-    def plot_schedule(self):
-        """Utility to visualize the schedule"""
-        import matplotlib.pyplot as plt
+    def __init__(
+        self,
+        optimizer: torch.optim.Optimizer,
+        warmup_epochs: int,
+        base_lr: float,
+        warmup_start_lr: float = 1e-6
+    ):
+        self.optimizer = optimizer
+        self.warmup_epochs = warmup_epochs
+        self.base_lr = base_lr
+        self.warmup_start_lr = warmup_start_lr
+        self.current_epoch = 0
+    
+    def step(self):
+        """Update learning rate"""
+        if self.current_epoch < self.warmup_epochs:
+            lr = self.warmup_start_lr + (
+                self.base_lr - self.warmup_start_lr
+            ) * self.current_epoch / self.warmup_epochs
+            
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = lr
         
-        alphas = self.get_all_alphas().detach().cpu().numpy()
-        layers = np.arange(self.num_layers)
-        
-        plt.figure(figsize=(8, 5))
-        plt.plot(layers, alphas, 'o-', linewidth=2, markersize=8)
-        plt.xlabel('Layer Index', fontsize=12)
-        plt.ylabel('α_l (Equivariance Weight)', fontsize=12)
-        plt.title(f'Depth-Adaptive Schedule: {self.schedule_type}', fontsize=14)
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
-        
-        return plt.gcf()
+        self.current_epoch += 1
+
+
+def get_lr_scheduler(
+    optimizer: torch.optim.Optimizer,
+    config,
+    steps_per_epoch: Optional[int] = None
+):
+    """Factory for learning rate schedulers"""
+    
+    if config.scheduler.lr_schedule == 'step':
+        return torch.optim.lr_scheduler.StepLR(
+            optimizer,
+            step_size=config.scheduler.lr_step_size,
+            gamma=config.scheduler.lr_gamma
+        )
+    
+    elif config.scheduler.lr_schedule == 'cosine':
+        return torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=config.training.num_epochs,
+            eta_min=1e-6
+        )
+    
+    elif config.scheduler.lr_schedule == 'plateau':
+        return torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode='min',
+            factor=config.scheduler.lr_gamma,
+            patience=10,
+            verbose=True
+        )
+    
+    elif config.scheduler.lr_schedule == 'exponential':
+        return torch.optim.lr_scheduler.ExponentialLR(
+            optimizer,
+            gamma=config.scheduler.lr_gamma
+        )
+    
+    else:  # 'none'
+        return None

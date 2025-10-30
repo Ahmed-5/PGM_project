@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from torch_geometric.nn import GCNConv, GINConv, SAGEConv, TransformerConv
 from torch_geometric.nn import global_mean_pool, global_add_pool
 from torch_scatter import scatter_add
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Union
 import math
 import traceback
 
@@ -292,40 +292,52 @@ class BaseGNN(nn.Module):
     
     # ========== Forward Passes ==========
     
-    def forward(self, x, pos, edge_index, batch, return_layer_outputs=False):
-        """Universal forward pass for all model types"""
+    def forward(self, x, pos, edge_index, batch, return_layer_outputs=False, return_node_embeddings=False):
+        """
+        Universal forward pass for all model types.
+        
+        Args:
+            return_node_embeddings: If True, return [num_nodes, hidden_dim] before pooling.
+                                   If False (default), return [num_graphs, out_dim] after pooling.
+        """
         if self.model_type == 'raw_mlp':
-            return self._forward_raw_mlp(x, pos, batch, return_layer_outputs)
+            return self._forward_raw_mlp(x, pos, batch, return_layer_outputs, return_node_embeddings)
         elif self.model_type == 'transformer':
-            return self._forward_transformer(x, pos, edge_index, batch, return_layer_outputs)
+            return self._forward_transformer(x, pos, edge_index, batch, return_layer_outputs, return_node_embeddings)
         elif self.model_type in ['gcn', 'gin', 'graphsage']:
-            return self._forward_standard_gnn(x, edge_index, batch, return_layer_outputs)
+            return self._forward_standard_gnn(x, edge_index, batch, return_layer_outputs, return_node_embeddings)
         elif self.model_type == 'schnet':
-            return self._forward_schnet(x, pos, edge_index, batch, return_layer_outputs)
+            return self._forward_schnet(x, pos, edge_index, batch, return_layer_outputs, return_node_embeddings)
         elif self.model_type == 'dimenet':
-            return self._forward_dimenet(x, pos, edge_index, batch, return_layer_outputs)
+            return self._forward_dimenet(x, pos, edge_index, batch, return_layer_outputs, return_node_embeddings)
         elif self.model_type == 'egnn':
-            return self._forward_egnn(x, pos, edge_index, batch, return_layer_outputs)
+            return self._forward_egnn(x, pos, edge_index, batch, return_layer_outputs, return_node_embeddings)
         elif self.model_type == 'painn':
-            return self._forward_painn(x, pos, edge_index, batch, return_layer_outputs)
+            return self._forward_painn(x, pos, edge_index, batch, return_layer_outputs, return_node_embeddings)
         elif self.model_type == 'vector_neuron':
-            return self._forward_vector_neuron(x, pos, edge_index, batch, return_layer_outputs)
+            return self._forward_vector_neuron(x, pos, edge_index, batch, return_layer_outputs, return_node_embeddings)
         elif self.model_type == 'se3_transformer':
-            return self._forward_se3_transformer(x, pos, edge_index, batch, return_layer_outputs)
+            return self._forward_se3_transformer(x, pos, edge_index, batch, return_layer_outputs, return_node_embeddings)
         elif self.model_type == 'nequip':
-            return self._forward_nequip(x, pos, edge_index, batch, return_layer_outputs)
+            return self._forward_nequip(x, pos, edge_index, batch, return_layer_outputs, return_node_embeddings)
         elif self.model_type == 'clofnet':
-            return self._forward_clofnet(x, pos, edge_index, batch, return_layer_outputs)
+            return self._forward_clofnet(x, pos, edge_index, batch, return_layer_outputs, return_node_embeddings)
     
-    def _forward_raw_mlp(self, x, pos, batch, return_layer_outputs):
+    def _forward_raw_mlp(self, x, pos, batch, return_layer_outputs, return_node_embeddings):
         layer_outputs = []
         x_with_pos = torch.cat([x, pos], dim=-1)
         graph_features = global_mean_pool(x_with_pos, batch)
         out = self.mlp(graph_features)
+        
+        if return_node_embeddings:
+            if return_layer_outputs:
+                return x_with_pos, layer_outputs
+            return x_with_pos
+        
         out = self.predictor(out)
         return (out, layer_outputs) if return_layer_outputs else out
     
-    def _forward_transformer(self, x, pos, edge_index, batch, return_layer_outputs):
+    def _forward_transformer(self, x, pos, edge_index, batch, return_layer_outputs, return_node_embeddings):
         layer_outputs = []
         x = self.feat_encoder(x) + self.pos_encoder(pos)
         
@@ -337,11 +349,16 @@ class BaseGNN(nn.Module):
             x = F.relu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
         
+        if return_node_embeddings:
+            if return_layer_outputs:
+                return x, layer_outputs
+            return x
+        
         x = global_mean_pool(x, batch)
         out = self.predictor(x)
         return (out, layer_outputs) if return_layer_outputs else out
     
-    def _forward_standard_gnn(self, x, edge_index, batch, return_layer_outputs):
+    def _forward_standard_gnn(self, x, edge_index, batch, return_layer_outputs, return_node_embeddings):
         layer_outputs = []
         
         for i, (conv, bn) in enumerate(zip(self.convs, self.batch_norms)):
@@ -352,11 +369,16 @@ class BaseGNN(nn.Module):
             x = F.relu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
         
+        if return_node_embeddings:
+            if return_layer_outputs:
+                return x, layer_outputs
+            return x
+        
         x = global_mean_pool(x, batch)
         out = self.predictor(x)
         return (out, layer_outputs) if return_layer_outputs else out
     
-    def _forward_schnet(self, x, pos, edge_index, batch, return_layer_outputs):
+    def _forward_schnet(self, x, pos, edge_index, batch, return_layer_outputs, return_node_embeddings):
         layer_outputs = []
         x = self.embedding(x)
         
@@ -368,11 +390,16 @@ class BaseGNN(nn.Module):
             x = F.relu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
         
+        if return_node_embeddings:
+            if return_layer_outputs:
+                return x, layer_outputs
+            return x
+        
         x = global_add_pool(x, batch)
         out = self.predictor(x)
         return (out, layer_outputs) if return_layer_outputs else out
     
-    def _forward_dimenet(self, x, pos, edge_index, batch, return_layer_outputs):
+    def _forward_dimenet(self, x, pos, edge_index, batch, return_layer_outputs, return_node_embeddings):
         layer_outputs = []
         x = self.embedding(x)
         
@@ -384,11 +411,16 @@ class BaseGNN(nn.Module):
             x = F.relu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
         
+        if return_node_embeddings:
+            if return_layer_outputs:
+                return x, layer_outputs
+            return x
+        
         x = global_add_pool(x, batch)
         out = self.predictor(x)
         return (out, layer_outputs) if return_layer_outputs else out
     
-    def _forward_egnn(self, x, pos, edge_index, batch, return_layer_outputs):
+    def _forward_egnn(self, x, pos, edge_index, batch, return_layer_outputs, return_node_embeddings):
         layer_outputs = []
         x = self.embedding(x)
         
@@ -400,11 +432,16 @@ class BaseGNN(nn.Module):
             x = F.relu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
         
+        if return_node_embeddings:
+            if return_layer_outputs:
+                return x, layer_outputs
+            return x
+        
         x = global_mean_pool(x, batch)
         out = self.predictor(x)
         return (out, layer_outputs) if return_layer_outputs else out
     
-    def _forward_painn(self, x, pos, edge_index, batch, return_layer_outputs):
+    def _forward_painn(self, x, pos, edge_index, batch, return_layer_outputs, return_node_embeddings):
         layer_outputs = []
         s = self.scalar_embedding(x)
         v = self.vector_embedding(pos).unsqueeze(-1)
@@ -415,11 +452,16 @@ class BaseGNN(nn.Module):
                 layer_outputs.append({'layer_idx': i, 'representation': s.clone(), 'vector_representation': v.clone(), 'edge_index': edge_index, 'batch': batch})
             s = F.dropout(s, p=self.dropout, training=self.training)
         
+        if return_node_embeddings:
+            if return_layer_outputs:
+                return s, layer_outputs
+            return s
+        
         s = global_mean_pool(s, batch)
         out = self.predictor(s)
         return (out, layer_outputs) if return_layer_outputs else out
     
-    def _forward_vector_neuron(self, x, pos, edge_index, batch, return_layer_outputs):
+    def _forward_vector_neuron(self, x, pos, edge_index, batch, return_layer_outputs, return_node_embeddings):
         layer_outputs = []
         v = self.vn_embedding(x, pos)
         
@@ -430,11 +472,17 @@ class BaseGNN(nn.Module):
             v = F.dropout(v, p=self.dropout, training=self.training)
         
         x_inv = self.invariant_pooling(v)
+        
+        if return_node_embeddings:
+            if return_layer_outputs:
+                return x_inv, layer_outputs
+            return x_inv
+        
         x_inv = global_mean_pool(x_inv, batch)
         out = self.predictor(x_inv)
         return (out, layer_outputs) if return_layer_outputs else out
     
-    def _forward_se3_transformer(self, x, pos, edge_index, batch, return_layer_outputs):
+    def _forward_se3_transformer(self, x, pos, edge_index, batch, return_layer_outputs, return_node_embeddings):
         layer_outputs = []
         features = {0: self.embedding(x)}
         
@@ -444,27 +492,36 @@ class BaseGNN(nn.Module):
                 layer_outputs.append({'layer_idx': i, 'representation': features[0].clone(), 'edge_index': edge_index, 'batch': batch})
             features[0] = F.dropout(features[0], p=self.dropout, training=self.training)
         
+        if return_node_embeddings:
+            if return_layer_outputs:
+                return features[0], layer_outputs
+            return features[0]
+        
         x = global_mean_pool(features[0], batch)
         out = self.predictor(x)
         return (out, layer_outputs) if return_layer_outputs else out
     
-    def _forward_nequip(self, x, pos, edge_index, batch, return_layer_outputs):
+    def _forward_nequip(self, x, pos, edge_index, batch, return_layer_outputs, return_node_embeddings):
         layer_outputs = []
         x = self.embedding(x)
         
-        for i, nequip_layer in enumerate(zip(self.nequip_layers, self.batch_norms)):
-            nequip_layer, bn = nequip_layer
+        for i, (nequip_layer, bn) in enumerate(zip(self.nequip_layers, self.batch_norms)):
             x = nequip_layer(x, pos, edge_index, self.spherical_harmonics)
             if return_layer_outputs:
                 layer_outputs.append({'layer_idx': i, 'representation': x.clone(), 'edge_index': edge_index, 'batch': batch})
             x = bn(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
         
+        if return_node_embeddings:
+            if return_layer_outputs:
+                return x, layer_outputs
+            return x
+        
         x = global_add_pool(x, batch)
         out = self.predictor(x)
         return (out, layer_outputs) if return_layer_outputs else out
     
-    def _forward_clofnet(self, x, pos, edge_index, batch, return_layer_outputs):
+    def _forward_clofnet(self, x, pos, edge_index, batch, return_layer_outputs, return_node_embeddings):
         layer_outputs = []
         x = self.embedding(x)
         frames = self.build_local_frames(pos, edge_index)
@@ -475,6 +532,11 @@ class BaseGNN(nn.Module):
                 layer_outputs.append({'layer_idx': i, 'representation': x.clone(), 'edge_index': edge_index, 'batch': batch})
             x = bn(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
+        
+        if return_node_embeddings:
+            if return_layer_outputs:
+                return x, layer_outputs
+            return x
         
         x = global_mean_pool(x, batch)
         out = self.predictor(x)
