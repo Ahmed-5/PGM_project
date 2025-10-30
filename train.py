@@ -221,6 +221,12 @@ def evaluate(
         else:
             dummy_pos = torch.zeros(batch.x.shape[0], 3, device=device)
             pred = model(batch.x, dummy_pos, batch.edge_index, batch.batch)
+
+            # Squeeze both to match dimensions
+        if pred.dim() == 2 and pred.shape[1] == 1:
+            pred = pred.squeeze(1)  # [32, 1] -> [32]
+        if batch.y.dim() == 2 and batch.y.shape[1] == 1:
+            batch.y = batch.y.squeeze(1)
         
         # Task loss
         task_loss = task_loss_fn(pred, batch.y)
