@@ -15,8 +15,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from typing import Optional, Union
-import math
-
 
 class DepthScheduler(nn.Module):
     """
@@ -29,6 +27,8 @@ class DepthScheduler(nn.Module):
     - inverse: Inverse decay pattern
     - u_shaped: U-shaped weight distribution
     - learnable: Learned weights with softplus activation
+    - linear_inc: Linearly increasing weights (focus on deep layers)
+    - exp_inc: Exponentially increasing weights (focus on deep layers)
     """
 
     def __init__(
@@ -43,7 +43,7 @@ class DepthScheduler(nn.Module):
         Args:
             num_layers: Number of layers in the model
             schedule_type: Type of scheduling strategy
-            alpha_0: Initial/maximum weight
+            alpha_0: Initial/maximum weight (or scaling factor)
             beta: Decay rate for exponential/inverse schedules
             gamma: Decay rate for linear schedule
         """
@@ -55,12 +55,18 @@ class DepthScheduler(nn.Module):
         self.gamma = gamma
 
         # Validate schedule type
-        valid_types = {'constant', 'exponential', 'linear', 'inverse', 'u_shaped', 'learnable'}
+        valid_types = {
+            'constant', 'exponential', 'linear', 'inverse', 'u_shaped', 'learnable',
+            'linear_inc', 'exp_inc'
+        }
+        
         if self.schedule_type not in valid_types:
+            # Fallback to constant if unknown, but warn or raise
+            # raising is safer for debugging
             raise ValueError(f"schedule_type must be one of {valid_types}, got {schedule_type}")
 
         # Initialize or register buffer
-        if schedule_type == 'learnable':
+        if self.schedule_type == 'learnable':
             # Initialize learnable parameters
             init_values = alpha_0 * np.exp(-beta * np.arange(num_layers))
             self.alpha = nn.Parameter(torch.tensor(init_values, dtype=torch.float32))
@@ -82,10 +88,24 @@ class DepthScheduler(nn.Module):
         elif self.schedule_type == 'exponential':
             # Exponential: α_l = α_0 * exp(-β*l)
             alpha = self.alpha_0 * torch.exp(-self.beta * layer_indices)
+            
+        elif self.schedule_type == 'exp_inc':
+            # Exponential Increasing: α_l = α_0 * exp(β * (l - (N-1))) 
+            # Normalized so the last layer is alpha_0
+            # Or simply reverse decay:
+            reverse_indices = (self.num_layers - 1) - layer_indices
+            alpha = self.alpha_0 * torch.exp(-self.beta * reverse_indices)
 
         elif self.schedule_type == 'linear':
             # Linear: α_l = max(0, α_0 - γ*l)
             alpha = torch.clamp(self.alpha_0 - self.gamma * layer_indices, min=0.0)
+            
+        elif self.schedule_type == 'linear_inc':
+            # Linear Increasing: α_l = (l / (N-1)) * alpha_0
+            if self.num_layers > 1:
+                alpha = (layer_indices / (self.num_layers - 1)) * self.alpha_0
+            else:
+                alpha = torch.tensor([self.alpha_0])
 
         elif self.schedule_type == 'inverse':
             # Inverse: α_l = α_0 / (1 + β*l)
@@ -107,10 +127,14 @@ class DepthScheduler(nn.Module):
         Efficient indexing without Python conditionals in hot path
         """
         if isinstance(layer_idx, int):
-            layer_idx = torch.tensor(layer_idx, dtype=torch.long)
+            # Ensure it's a tensor on correct device if needed for logic, 
+            # but for simple indexing python int works on cuda tensor too.
+            pass 
 
         if self.schedule_type == 'learnable':
             # Apply softplus activation to learnable parameters
+            if isinstance(layer_idx, int):
+                 return F.softplus(self.alpha[layer_idx])
             return F.softplus(self.alpha[layer_idx])
         else:
             # Direct indexing for fixed schedules (very fast)
@@ -135,6 +159,29 @@ class DepthScheduler(nn.Module):
         """String representation"""
         return (f"num_layers={self.num_layers}, schedule_type='{self.schedule_type}', "
                 f"alpha_0={self.alpha_0}, beta={self.beta}, gamma={self.gamma}")
+
+# Simple helper for standalone usage (replaces the previous factory function)
+def get_layer_weights(num_layers: int, strategy: str, decay_rate: float = 0.5, device='cpu') -> torch.Tensor:
+    """
+    Factory wrapper to maintain compatibility with previous instructions.
+    Uses DepthScheduler internally.
+    """
+    # Map parameters roughly
+    # decay_rate serves as beta proxy for simple calls
+    # We assume decay_rate is like 0.5 per step, which means exp(-beta) = 0.5 -> beta = -ln(0.5) = 0.69
+    import math
+    beta_proxy = -math.log(max(decay_rate, 1e-6)) 
+    
+    scheduler = DepthScheduler(
+        num_layers=num_layers,
+        schedule_type=strategy,
+        alpha_0=1.0,
+        beta=beta_proxy,
+        gamma=0.1 # default
+    )
+    
+    weights = scheduler.get_all_alphas().to(device)
+    return weights
 
 
 class WarmupScheduler:

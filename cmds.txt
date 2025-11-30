@@ -1,0 +1,106 @@
+python cli.py  --experiment_name "ZINC_GCN_Baseline"  --data.dataset_name ZINC  --model.model_type gcn --model.hidden_channels 128  --model.num_layers 6  --equivariance.stochastic_probability 0.0  --scheduler.alpha_0 0.0  --training.batch_size 128  --logging.logger_type wandb
+
+python cli.py --experiment_name "ZINC_GCN_EquivLoss" --data.dataset_name ZINC --model.model_type gcn --model.hidden_channels 128 --model.num_layers 6 --equivariance.stochastic_probability 0.25 --equivariance.symmetry_groups "['so3', 'translation']" --equivariance.group_weights "{'so3': 0.5, 'translation': 0.5}" --scheduler.alpha_0 1.0 --training.accumulation_steps 2  --logging.logger_type wandb
+
+python cli.py --experiment_name "ZINC_GCN_EquivLoss" --data.dataset_name ZINC --model.model_type gcn --model.hidden_channels 128 --model.num_layers 6 --equivariance.stochastic_probability 0.25 --equivariance.symmetry_groups 'so3' --equivariance.group_weights "{'so3': 0.5}" --scheduler.alpha_0 1.0 --training.accumulation_steps 2  --logging.logger_type wandb
+
+python cli.py --experiment_name "QM9_GCN_EquivLoss" --data.dataset_name QM9 --data.qm9_target 7 --model.model_type gcn --model.hidden_channels 128 --model.num_layers 6 --equivariance.stochastic_probability 0.15 --equivariance.symmetry_groups "so3" --equivariance.group_weights "{'so3': 1.0}" --scheduler.alpha_0 0.5 --training.accumulation_steps 4 --model.in_channels 11 --data.use_position True  --logging.logger_type wandb
+
+python cli.py --experiment_name "QM9_GCN_EquivLoss" --data.dataset_name QM9 --data.qm9_target 7 --model.model_type gcn --model.hidden_channels 128 --model.num_layers 6 --equivariance.stochastic_probability 0 --equivariance.symmetry_groups "so3" --scheduler.alpha_0 0.5 --training.accumulation_steps 4 --model.in_channels 11 --data.use_position True  --logging.logger_type wandb
+
+#!/bin/bash
+
+# ==============================================================================
+# ABLATION STUDY MASTER LIST
+# Project: Relaxed Equivariance via Multitask Learning (REMUL-Extension)
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# GROUP 1: SCHEDULING STRATEGIES (Core Hypothesis)
+# Goal: Demonstrate that Learnable Scheduling outperforms Fixed and Baseline.
+# Dataset: ZINC (2D Permutation Symmetry)
+# ------------------------------------------------------------------------------
+
+echo "Running Group 1: Scheduling Strategies..."
+
+# 1. Baseline: Standard GCN, No Equivariance Loss
+python cli.py --experiment_name "ZINC_GCN_Baseline" --data.dataset_name ZINC --model.model_type gcn --model.hidden_channels 128 --model.num_layers 6 --equivariance.stochastic_probability 0.0 --scheduler.alpha_0 0.0 --training.batch_size 128 --logging.logger_type wandb
+
+# 2. Constant Schedule: Fixed Alpha=1.0 across all layers
+python cli.py --experiment_name "ZINC_GCN_Constant" --data.dataset_name ZINC --model.model_type gcn --model.hidden_channels 128 --model.num_layers 6 --equivariance.stochastic_probability 0.25 --scheduler.depth_schedule constant --scheduler.alpha_0 1.0 --training.accumulation_steps 2 --logging.logger_type wandb
+
+# 3. Linear Decay: Linearly decreases alpha deeper in the network
+python cli.py --experiment_name "ZINC_GCN_Linear" --data.dataset_name ZINC --model.model_type gcn --model.hidden_channels 128 --model.num_layers 6 --equivariance.stochastic_probability 0.25 --scheduler.depth_schedule linear --scheduler.alpha_0 1.0 --scheduler.gamma 0.1 --training.accumulation_steps 2 --logging.logger_type wandb
+
+# 4. Learnable Schedule (PROPOSED): Alpha is a trainable parameter per layer
+python cli.py --experiment_name "ZINC_GCN_Learnable" --data.dataset_name ZINC --model.model_type gcn --model.hidden_channels 128 --model.num_layers 6 --equivariance.stochastic_probability 0.25 --scheduler.depth_schedule learnable --scheduler.alpha_0 0.1 --training.accumulation_steps 2 --logging.logger_type wandb
+
+
+# ------------------------------------------------------------------------------
+# GROUP 2: FEATURE ENCODING ABLATIONS
+# Goal: Assess impact of feature richness on the ability to learn equivariance.
+# ------------------------------------------------------------------------------
+
+echo "Running Group 2: Feature Encodings..."
+
+# 1. Atomic Features Only (No Degree info)
+python cli.py --experiment_name "ZINC_GCN_Atomic" --data.dataset_name ZINC --data.feature_type atomic --model.model_type gcn --scheduler.depth_schedule learnable --scheduler.alpha_0 0.1 --logging.logger_type wandb
+
+# 2. Combined Features (Atomic + Degree) - Expected Best Performer
+python cli.py --experiment_name "ZINC_GCN_Combined" --data.dataset_name ZINC --data.feature_type combined --model.model_type gcn --scheduler.depth_schedule learnable --scheduler.alpha_0 0.1 --logging.logger_type wandb
+
+
+# ------------------------------------------------------------------------------
+# GROUP 3: GRAPH REWIRING EXTENSIONS
+# Goal: Test if modifying graph topology assists the equivariance learning.
+# ------------------------------------------------------------------------------
+
+echo "Running Group 3: Graph Rewiring..."
+
+# 1. Spectral Rewiring (Diffusion-based shortcuts)
+python cli.py --experiment_name "ZINC_GCN_SpectralRewire" --data.dataset_name ZINC --data.rewiring spectral --data.rewiring_k 2 --model.model_type gcn --scheduler.depth_schedule learnable --scheduler.alpha_0 0.1 --logging.logger_type wandb
+
+# 2. Geometric Rewiring (Distance-based shortcuts) - Uses QM9 as ZINC is 2D
+python cli.py --experiment_name "QM9_GCN_GeometricRewire" --data.dataset_name QM9 --data.qm9_target 7 --data.rewiring geometric --data.rewiring_threshold 5.0 --model.model_type gcn --scheduler.depth_schedule learnable --model.in_channels 11 --data.use_position True --logging.logger_type wandb
+
+
+# ------------------------------------------------------------------------------
+# GROUP 4: SOFT VS. HARD EQUIVARIANCE (NEW REQUEST)
+# Goal: Compare "Standard Model + Equivariance Loss" (Soft) vs. 
+#       "Architecturally Equivariant Model" (Hard).
+# Dataset: QM9 (3D Rotation/Translation Symmetry is critical here)
+# ------------------------------------------------------------------------------
+
+echo "Running Group 4: Soft vs. Hard Equivariance..."
+
+# --- A. NON-EQUIVARIANT ARCHITECTURE (GCN) ---
+
+# 1. Baseline: GCN on 3D data (Naive approach, not rotation invariant)
+#    Performance is usually poor as the model must "learn" to be invariant from data alone.
+python cli.py --experiment_name "QM9_GCN_Naive_Baseline" --data.dataset_name QM9 --data.qm9_target 7 --model.model_type gcn --model.in_channels 11 --data.use_position True --equivariance.stochastic_probability 0.0 --logging.logger_type wandb
+
+# 2. Soft Equivariance: GCN + Auxiliary SO(3) Loss
+#    Model is technically GCN, but forced to learn symmetry via loss penalty.
+python cli.py --experiment_name "QM9_GCN_Soft_Equivariance" --data.dataset_name QM9 --data.qm9_target 7 --model.model_type gcn --model.in_channels 11 --data.use_position True --equivariance.stochastic_probability 0.25 --equivariance.symmetry_groups "['so3', 'translation']" --equivariance.group_weights "{'so3': 1.0, 'translation': 1.0}" --scheduler.depth_schedule learnable --scheduler.alpha_0 0.1 --logging.logger_type wandb
+
+# --- B. EQUIVARIANT ARCHITECTURES (Hard Constraints) ---
+
+# 3. Hard Equivariance: EGNN (E(n) Equivariant Graph Neural Network)
+#    Symmetry is built into the layers. No auxiliary loss needed (prob=0.0).
+python cli.py --experiment_name "QM9_EGNN_Hard_Equivariance" --data.dataset_name QM9 --data.qm9_target 7 --model.model_type egnn --model.in_channels 11 --data.use_position True --equivariance.stochastic_probability 0.0 --logging.logger_type wandb
+
+# 4. Hard Equivariance: PaiNN (Polarizable Atom Interaction Neural Network)
+#    A stronger, physics-informed equivariant baseline.
+python cli.py --experiment_name "QM9_PaiNN_Hard_Equivariance" --data.dataset_name QM9 --data.qm9_target 7 --model.model_type painn --model.in_channels 11 --data.use_position True --equivariance.stochastic_probability 0.0 --logging.logger_type wandb
+
+# 5. Hard Equivariance: Vector Neuron (SO(3) Equivariant)
+#    Alternative geometric approach.
+python cli.py --experiment_name "QM9_VN_Hard_Equivariance" --data.dataset_name QM9 --data.qm9_target 7 --model.model_type vector_neuron --model.in_channels 11 --data.use_position True --equivariance.stochastic_probability 0.0 --logging.logger_type wandb
+
+# --- C. HYBRID APPROACH (Scientific Curiosity) ---
+
+# 6. Hybrid: EGNN + Auxiliary Loss
+# Does adding the loss help an already equivariant model converge faster? --logging.logger_type wandb
+# Or does it act as a regularizer? --logging.logger_type wandb
+python cli.py --experiment_name "QM9_EGNN_Hybrid" --data.dataset_name QM9 --data.qm9_target 7 --model.model_type egnn --model.in_channels 11 --data.use_position True --equivariance.stochastic_probability 0.25 --equivariance.symmetry_groups "['so3']" --scheduler.depth_schedule constant --scheduler.alpha_0 0.1 --logging.logger_type wandb
+

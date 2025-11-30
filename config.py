@@ -36,6 +36,10 @@ class ModelConfig:
     update_coords: bool = False
     max_ell: int = 2
     num_degrees: int = 2
+    
+    # Standard GNN extensions
+    use_pos: bool = False  # Concatenate positions with node features for standard GNNs
+    
     use_layer_norm: bool = False
     use_batch_norm: bool = True
     
@@ -48,22 +52,25 @@ class ModelConfig:
 
 @dataclass
 class EquivarianceLossConfig:
-    """Equivariance loss with adaptive weighting support"""
-    
-    symmetry_groups: List[str] = field(default_factory=lambda: ['permutation'])
+    """Equivariance loss with adaptive weighting and stochastic support"""
+    symmetry_groups: List[str] = field(default_factory=lambda: [])
     group_weights: Dict[str, float] = field(default_factory=lambda: {
         'permutation': 0.1, 'so3': 0.1, 'o3': 0.1, 'se3': 0.1,
         'e3': 0.1, 'translation': 0.1, 'reflection': 0.1, 'scaling': 0.05
     })
-    
-    num_samples: int = 3
+    num_samples: int = 2  # Reduced default for speed
     normalize: bool = True
-    feature_type: Literal['invariant', 'equivariant'] = 'invariant' # 'invariant': features unchanged or 'equivariant': features transform
+    feature_type: Literal['invariant', 'equivariant'] = 'invariant'
     max_translation: float = 5.0
     scale_range: Tuple[float, float] = (0.5, 2.0)
     use_adaptive_weighting: bool = False
-    min_weight: float = 0.01
-    max_weight: float = 1.0
+    
+    # [NEW] Stochastic Regularization for Ablation Efficiency
+    stochastic_probability: float = 0.25  # Only apply loss on 25% of batches
+
+    layer_weight_strategy: Literal['constant', 'linear_decay', 'linear_inc', 
+                                   'exp_decay', 'exp_inc', 'u_shaped', 'learnable'] = 'constant'
+    layer_decay_rate: float = 0.5  # For exponential strategies
     
     def __post_init__(self):
         valid_groups = {
@@ -108,7 +115,7 @@ class TrainingConfig:
     
     patience: int = 20
     min_delta: float = 1e-4
-    use_amp: bool = False  # Mixed precision training
+    use_amp: bool = True  # Mixed precision training (Enabled by default for speed)
     accumulation_steps: int = 1
 
 
@@ -128,6 +135,10 @@ class DataConfig:
     num_workers: int = 4
     use_positions: bool = False
     
+    # [OPTIMIZED] Data loading defaults
+    persistent_workers: bool = True
+    prefetch_factor: int = 2
+    
     md17_molecule: str = 'aspirin'
     qm9_target: int = 7
     
@@ -143,8 +154,10 @@ class LoggingConfig:
     
     logger_type: Literal['wandb', 'tensorboard', 'both', 'none'] = 'none'
     
-    wandb_project: str = 'equivariant-gnns'
-    wandb_entity: Optional[str] = None
+    # wandb_project: str = 'PGM_Project_wandb'
+    # wandb_entity: Optional[str] = "PGM"
+    wandb_project: str = 'PGM'
+    wandb_entity: Optional[str] = "PGM_Project_wandb"
     wandb_name: Optional[str] = None
     wandb_notes: Optional[str] = None
     wandb_tags: List[str] = field(default_factory=list)

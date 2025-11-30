@@ -20,6 +20,8 @@ from typing import Tuple, Optional, Dict, Any, Callable
 import warnings
 from functools import lru_cache
 import math
+from torch_geometric.data import InMemoryDataset
+from rewiring import GraphRewiring
 
 
 # ========== DATASET REGISTRY & METADATA ==========
@@ -184,50 +186,78 @@ class ZincLoader:
 
         return train_dataset, val_dataset, test_dataset
 
+class ProcessedQM9(InMemoryDataset):
+    """
+    Wrapper class to make the modified QM9 dataset pickleable.
+    Must be defined at top level for Windows multiprocessing.
+    """
+    def __init__(self, data_list):
+        super().__init__(None, None, None)
+        self.data, self.slices = self.collate(data_list)
+
+# [Then replace the QM9Loader class with this version]
 
 class QM9Loader:
     """OPTIMIZED: Efficient QM9 loading with vectorized filtering"""
-
     @staticmethod
     def load(config) -> Tuple:
         """
         OPTIMIZED: Vectorized NaN filtering and normalization
-
-        Before: Loop over each sample to check NaN
-        After: torch.isnan vectorized operation
         """
         dataset = QM9(root=config.data.root)
-
-        # Get target index (default: HOMO-LUMO gap)
+        
+        # Get target index (default: 7, HOMO-LUMO gap)
         target_idx = getattr(config.data, 'qm9_target', 7)
+        
+        # 1. Filter NaNs safely
+        if hasattr(dataset, '_data') and hasattr(dataset, 'slices'):
+            all_y = dataset._data.y
+            if all_y.dim() > 1:
+                targets = all_y[:, target_idx]
+            else:
+                targets = all_y 
+        else:
+            targets = torch.tensor([d.y.view(-1)[target_idx].item() for d in dataset])
 
-        # Vectorized NaN filtering
-        targets = dataset.y[:, target_idx]
+        # Filter invalid samples
         valid_mask = ~torch.isnan(targets)
-        valid_indices = torch.where(valid_mask)[0].tolist()
-
-        dataset = dataset[valid_indices]
-
-        # Efficient target extraction and normalization
-        targets = torch.stack([data.y[target_idx] for data in dataset])
-        mean, std = targets.mean(), targets.std()
-
-        normalizer = NormalizeTargets(targets)
-
-        # Apply normalization to all samples
-        for data in dataset:
-            data.y = (data.y[target_idx] - mean) / std
-
-        # Vectorized split (no explicit loops)
+        valid_indices = torch.where(valid_mask)[0]
+        
+        # Create subset for calculation
+        # Note: We must not modify the original dataset yet
+        valid_targets = targets[valid_indices]
+        
+        mean = valid_targets.mean()
+        std = valid_targets.std()
+        
+        # 2. Create new data list with normalized targets
+        # We filter AND normalize in one pass to avoid indexing issues
+        new_data_list = []
+        
+        # Use indices to access original data efficiently
+        for idx in valid_indices:
+            data = dataset[idx.item()]
+            # Extract specific target
+            raw_val = data.y.view(-1)[target_idx]
+            norm_val = (raw_val - mean) / std
+            
+            # Set y to [1, 1] shape for regression
+            data.y = norm_val.view(1, 1)
+            new_data_list.append(data)
+            
+        # 3. Wrap in top-level class (Pickleable!)
+        dataset = ProcessedQM9(new_data_list)
+        
+        # Vectorized split
         train_size = int(0.8 * len(dataset))
         val_size = int(0.1 * len(dataset))
         test_size = len(dataset) - train_size - val_size
-
+        
         train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(
             dataset, [train_size, val_size, test_size],
             generator=torch.Generator().manual_seed(config.seed)
         )
-
+        
         return train_dataset, val_dataset, test_dataset
 
 

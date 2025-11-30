@@ -19,7 +19,7 @@ Performance: 5-15x faster than v2 depending on graph size and batch composition
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Tuple, Callable
+from typing import Optional, Tuple, Callable, Dict, List
 import math
 import warnings
 
@@ -310,37 +310,46 @@ class EquivarianceLoss(nn.Module):
 
     # ========== CORE EQUIVARIANCE TESTING (Fully Optimized v3) ==========
 
-    def _forward_geometric_impl(self, network_fn: Callable, positions: torch.Tensor,
-                                features: torch.Tensor, edge_index: torch.Tensor,
-                                batch: torch.Tensor) -> torch.Tensor:
+    def _forward_geometric_impl(self, network_fn: Callable, positions: torch.Tensor, 
+                              features: torch.Tensor, edge_index: torch.Tensor,
+                              batch: torch.Tensor) -> torch.Tensor:
         """
         OPTIMIZED (v3): Fully vectorized test for geometric groups.
-        This is the core implementation that gets compiled (if available).
+        Fixed: correctly handles 1D tensor broadcasting for edge offsets.
         """
         device = positions.device
         dtype = positions.dtype
         num_nodes_total = positions.shape[0]
         num_edges_total = edge_index.shape[1]
         
+        # Dynamic feature dimension inference
+        feature_dim = features.shape[1]
+
         graph_ids, node_counts = torch.unique(batch, return_counts=True)
         num_graphs = graph_ids.shape[0]
+
         if num_graphs == 0:
             return torch.tensor(0.0, device=device, dtype=dtype)
         
         total_samples = num_graphs * self.num_samples
 
         # 1. Compute f(x) for the original batch
-        f_x = network_fn(positions, features, edge_index, batch)
-        
+        # We pass return_layer_outputs=True to get intermediate representations
+        f_x, layer_outputs_x = network_fn(positions, features, edge_index, batch)
+
         # 2. Sample all transformations at once
         R, t, s = self.sample_geometric_batch(total_samples, device)
 
-        # 3. Pre-allocate expanded tensors (avoid repeated allocations)
+        # 3. Pre-allocate expanded tensors
         expanded_pos = torch.empty(
-            num_nodes_total * self.num_samples, positions.shape[1],
+            num_nodes_total * self.num_samples, positions.shape[1], 
             device=device, dtype=dtype
         )
-        expanded_features = torch.empty_like(expanded_pos[:, :features.shape[1]])
+        
+        expanded_features = torch.empty(
+            num_nodes_total * self.num_samples, feature_dim,
+            device=device, dtype=dtype
+        )
 
         # Efficient expansion using index operations
         for i in range(self.num_samples):
@@ -349,42 +358,84 @@ class EquivarianceLoss(nn.Module):
             expanded_pos[start_idx:end_idx].copy_(positions)
             expanded_features[start_idx:end_idx].copy_(features)
 
-        # Create batch index mapping node -> sample_idx
+        # Create batch index mapping
         graph_id_map = torch.zeros(batch.max().item() + 1, dtype=torch.long, device=device)
         graph_id_map[graph_ids] = torch.arange(num_graphs, device=device)
+        
         batch_mapped = graph_id_map[batch]
-
         batch_offset = torch.arange(self.num_samples, device=device, dtype=torch.long) * num_graphs
+        
         expanded_batch_idx = batch_mapped.repeat(self.num_samples) + \
-                             batch_offset.repeat_interleave(num_nodes_total)
+                           batch_offset.repeat_interleave(num_nodes_total)
 
-        # Create expanded edge index efficiently
+        # 4. Create expanded edge index efficiently
+        # FIX: Removed 'dim=1'. edge_offset is 1D, so we default to dim=0.
         edge_offset = torch.arange(self.num_samples, device=device, dtype=torch.long) * num_nodes_total
-        expanded_edge_index = edge_index.repeat(1, self.num_samples) + \
-                              edge_offset.repeat_interleave(num_edges_total, dim=1)
+        
+        # We create the offset vector [0...0, N...N, ...]
+        offset_vector = edge_offset.repeat_interleave(num_edges_total)
+        
+        # Add offset to both rows of edge_index (broadcasts [S*E] -> [2, S*E])
+        expanded_edge_index = edge_index.repeat(1, self.num_samples) + offset_vector
 
-        # 4. Apply g·x (Apply transformations to expanded batch)
+        # 5. Apply g·x (Apply transformations to expanded batch)
         pos_g_x = self.apply_geometric_transform(
             expanded_pos, expanded_batch_idx, R, t, s)
 
-        # 5. Compute f(g·x)
-        f_g_x = network_fn(
-            pos_g_x, expanded_features, expanded_edge_index, expanded_batch_idx)
+        # 6. Compute f(g·x)
+        f_g_x, layer_outputs_g_x = network_fn(
+            pos_g_x, expanded_features, expanded_edge_index, expanded_batch_idx, return_layer_outputs=True)
 
-        # 6. Compute g·f(x)
-        f_x_expanded = f_x.repeat(self.num_samples, 1)
-        g_f_x = self.transform_features_geometric(
-            f_x_expanded, expanded_batch_idx, R, s)
+        # Helper to compute loss for a pair of tensors
+        def compute_layer_loss(out_x, out_g_x, name="final"):
+            # Expand out_x to match out_g_x
+            out_x_expanded = out_x.repeat(self.num_samples, 1)
+            
+            # Apply g to f(x) -> g·f(x)
+            g_f_x = self.transform_features_geometric(
+                out_x_expanded, expanded_batch_idx, R, s)
+            
+            # Compute MSE
+            error_sq = (out_g_x - g_f_x) ** 2
+            loss = torch.mean(error_sq)
+            
+            if self.normalize:
+                feat_norm_sq = torch.mean(out_x ** 2) + self.epsilon
+                loss = loss / feat_norm_sq
+            
+            return loss
 
-        # 7. Compute loss (fused operations)
-        error_sq = (f_g_x - g_f_x) ** 2
-        loss = torch.mean(error_sq)
+        # 7. Compute Main Loss
+        main_loss = compute_layer_loss(f_x, f_g_x, "final")
+        
+        # 8. Compute Per-Layer Losses
+        loss_dict = {}
+        
+        # Ensure we have matching layers
+        if layer_outputs_x and layer_outputs_g_x:
+            for l_x, l_g_x in zip(layer_outputs_x, layer_outputs_g_x):
+                layer_idx = l_x['layer_idx']
+                
+                # Check if we should use 'representation' or 'vector_representation'
+                # Prioritize vector representation if available and we are checking geometric equivariance
+                if 'vector_representation' in l_x and self.group_type in ['so3', 'o3', 'se3', 'e3']:
+                    feat_x = l_x['vector_representation']
+                    feat_g_x = l_g_x['vector_representation']
+                    # Flatten vectors for loss computation [N, 3] -> [N, 3]
+                    # But transform_features_geometric expects [N, F]
+                    # If F=3 it rotates.
+                    # PaiNN vectors are [N, 3].
+                    l_loss = compute_layer_loss(feat_x, feat_g_x, f"layer_{layer_idx}_vec")
+                    loss_dict[f"layer_{layer_idx}_vec"] = l_loss
+                
+                # Always compute for scalar/main representation
+                feat_x = l_x['representation']
+                feat_g_x = l_g_x['representation']
+                l_loss = compute_layer_loss(feat_x, feat_g_x, f"layer_{layer_idx}")
+                loss_dict[f"layer_{layer_idx}"] = l_loss
 
-        if self.normalize:
-            feat_norm_sq = torch.mean(f_x ** 2) + self.epsilon
-            loss = loss / feat_norm_sq
+        return main_loss, loss_dict
 
-        return loss
 
     def _forward_permutation_impl(self, network_fn: Callable, positions: torch.Tensor,
                                   features: torch.Tensor, edge_index: torch.Tensor,
@@ -397,9 +448,14 @@ class EquivarianceLoss(nn.Module):
         dtype = positions.dtype
         unique_graphs = torch.unique(batch)
         
+        # Initialize accumulators
         total_loss = torch.tensor(0.0, device=device, dtype=dtype)
         total_feat_norm_sq = torch.tensor(0.0, device=device, dtype=dtype)
         total_nodes_tested = 0
+        
+        # Per-layer accumulators
+        total_layer_losses = {}
+        total_layer_norms = {}
 
         for graph_id in unique_graphs:
             # --- 1. Extract single graph data ---
@@ -425,8 +481,8 @@ class EquivarianceLoss(nn.Module):
             graph_batch = torch.zeros(num_nodes, dtype=torch.long, device=device)
 
             # --- 2. Compute f(x) for this graph ---
-            f_x_graph = network_fn(
-                graph_positions, graph_features, local_edges, graph_batch)
+            f_x_graph, layer_outputs_x = network_fn(
+                graph_positions, graph_features, local_edges, graph_batch, return_layer_outputs=True)
             
             # --- 3. Sample `num_samples` permutations ---
             perms = self.sample_permutation_batch(num_nodes, self.num_samples, device)
@@ -468,36 +524,71 @@ class EquivarianceLoss(nn.Module):
             edges_g_x = inv_perm_indices_flat[expanded_edges]
 
             # --- 6. Compute f(g·x) ---
-            f_g_x = network_fn(
-                pos_g_x, feat_g_x, edges_g_x, expanded_batch)
+            f_g_x, layer_outputs_g_x = network_fn(
+                pos_g_x, feat_g_x, edges_g_x, expanded_batch, return_layer_outputs=True)
 
-            # --- 7. Compute g·f(x) ---
-            f_x_expanded = f_x_graph.repeat(self.num_samples, 1)
-            if self.feature_type == 'invariant':
-                g_f_x = f_x_expanded
-            else:
-                g_f_x = f_x_expanded[perm_indices_flat]
-            
-            # --- 8. Accumulate loss (on-device, no .item() calls) ---
-            loss_sq = (f_g_x - g_f_x) ** 2
-            total_loss = total_loss + torch.sum(loss_sq)
+            # Helper to accumulate loss
+            def accumulate_loss(out_x, out_g_x, name="final"):
+                # Expand f(x)
+                out_x_expanded = out_x.repeat(self.num_samples, 1)
+                
+                # g·f(x)
+                if self.feature_type == 'invariant':
+                    g_f_x = out_x_expanded
+                else:
+                    g_f_x = out_x_expanded[perm_indices_flat]
+                
+                # Loss
+                loss_sq = (out_g_x - g_f_x) ** 2
+                loss_sum = torch.sum(loss_sq)
+                
+                # Update accumulators
+                if name == "final":
+                    nonlocal total_loss, total_feat_norm_sq
+                    total_loss = total_loss + loss_sum
+                    if self.normalize:
+                        total_feat_norm_sq = total_feat_norm_sq + \
+                            torch.sum(out_x ** 2) * self.num_samples
+                else:
+                    if name not in total_layer_losses:
+                        total_layer_losses[name] = torch.tensor(0.0, device=device, dtype=dtype)
+                        total_layer_norms[name] = torch.tensor(0.0, device=device, dtype=dtype)
+                    
+                    total_layer_losses[name] = total_layer_losses[name] + loss_sum
+                    if self.normalize:
+                        total_layer_norms[name] = total_layer_norms[name] + \
+                            torch.sum(out_x ** 2) * self.num_samples
+
+            # --- 7. Accumulate Main Loss ---
+            accumulate_loss(f_x_graph, f_g_x, "final")
             total_nodes_tested += f_g_x.shape[0]
             
-            if self.normalize:
-                total_feat_norm_sq = total_feat_norm_sq + \
-                    torch.sum(f_x_graph ** 2) * self.num_samples
-        
-        # --- 9. Final averaging ---
-        if total_nodes_tested == 0:
-            return torch.tensor(0.0, device=device, dtype=dtype)
-        
-        avg_loss = total_loss / total_nodes_tested
+            # --- 8. Accumulate Per-Layer Loss ---
+            if layer_outputs_x and layer_outputs_g_x:
+                for l_x, l_g_x in zip(layer_outputs_x, layer_outputs_g_x):
+                    layer_idx = l_x['layer_idx']
+                    accumulate_loss(l_x['representation'], l_g_x['representation'], f"layer_{layer_idx}")
 
+        # --- 9. Final averaging ---
+        loss_dict = {}
+        if total_nodes_tested == 0:
+            return torch.tensor(0.0, device=device, dtype=dtype), loss_dict
+        
+        # Main Loss
+        avg_loss = total_loss / total_nodes_tested
         if self.normalize:
             avg_norm = total_feat_norm_sq / total_nodes_tested
             avg_loss = avg_loss / (avg_norm + self.epsilon)
+            
+        # Per-Layer Losses
+        for name, val in total_layer_losses.items():
+            l_loss = val / total_nodes_tested
+            if self.normalize:
+                l_norm = total_layer_norms[name] / total_nodes_tested
+                l_loss = l_loss / (l_norm + self.epsilon)
+            loss_dict[name] = l_loss
 
-        return avg_loss
+        return avg_loss, loss_dict
 
     # ========== COMPILATION WRAPPERS WITH ERROR HANDLING ==========
 
@@ -549,7 +640,7 @@ class EquivarianceLoss(nn.Module):
 
     def forward(self, network_fn: Callable, positions: torch.Tensor,
                 features: torch.Tensor, edge_index: torch.Tensor,
-                batch: torch.Tensor) -> torch.Tensor:
+                batch: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """
         OPTIMIZED (v3): Compute equivariance loss: L_eq = ||f(g·x) - g·f(x)||²
         
@@ -559,6 +650,7 @@ class EquivarianceLoss(nn.Module):
         - Minimal GPU-CPU synchronization
         - Contiguous memory layout management
         - Graceful fallback to eager execution if compilation unavailable
+        - [NEW] Returns per-layer loss statistics
         
         Args:
             network_fn: Callable that takes (positions, features, edge_index, batch)
@@ -568,7 +660,9 @@ class EquivarianceLoss(nn.Module):
             batch: Batch assignment [num_nodes]
         
         Returns:
-            Equivariance loss (scalar tensor on GPU)
+            Tuple containing:
+            - Total equivariance loss (scalar tensor on GPU)
+            - Dictionary of per-layer losses
         """
         if self.group_type == 'permutation':
             forward_impl = self._get_compiled_forward_permutation()

@@ -19,6 +19,15 @@ from torch_geometric.nn import global_mean_pool, global_add_pool
 from torch_scatter import scatter_add, scatter
 from typing import List, Dict, Tuple, Optional, Union
 import math
+from torch_geometric.utils import degree, to_dense_adj, to_dense_batch
+
+# Try importing e3nn, fallback if missing
+try:
+    from e3nn import o3
+    from e3nn.nn import BatchNorm
+    HAS_E3NN = True
+except ImportError:
+    HAS_E3NN = False
 
 
 class BaseGNN(nn.Module):
@@ -53,6 +62,7 @@ class BaseGNN(nn.Module):
         update_coords: bool = False,
         max_ell: int = 2,
         num_degrees: int = 2,
+        use_pos: bool = False
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -62,6 +72,7 @@ class BaseGNN(nn.Module):
         self.dropout = dropout
         self.model_type = model_type.lower()
         self.spatial_dim = spatial_dim
+        self.use_pos = use_pos
 
         # Validate model type
         valid_models = {
@@ -87,6 +98,8 @@ class BaseGNN(nn.Module):
             'se3_transformer': lambda: self._build_se3_transformer(num_heads, num_degrees),
             'nequip': lambda: self._build_nequip(num_gaussians, max_ell),
             'clofnet': self._build_clofnet,
+            'graphormer': lambda: self._build_graphormer(num_heads),
+            'equiformer': lambda: self._build_equiformer(max_ell),
         }
 
         # Call appropriate builder
@@ -286,6 +299,37 @@ class BaseGNN(nn.Module):
             nn.Linear(self.hidden_channels // 2, self.out_channels)
         )
 
+    def _build_graphormer(self, num_heads):
+        """Graphormer - Graph Transformer with structural encodings"""
+        self.embedding = nn.Linear(self.in_channels, self.hidden_channels)
+        
+        self.graphormer_layers = nn.ModuleList([
+            GraphormerLayer(self.hidden_channels, self.hidden_channels, num_heads=num_heads)
+            for _ in range(self.num_layers)
+        ])
+        # Helper to get shortest paths (optional, naive implementation)
+        self.compute_shortest_paths = True 
+
+    def _build_equiformer(self, max_ell):
+        """Equiformer - Requires e3nn"""
+        if not HAS_E3NN:
+            raise ImportError("Equiformer selected but e3nn not installed.")
+            
+        # Define Irreps: 0e (scalar), 1o (vector), 2e (tensor)
+        # Input: scalars (features) + vectors (if pos used as feat)
+        irr_input = o3.Irreps(f"{self.in_channels}x0e")
+        irr_hidden = o3.Irreps(f"{self.hidden_channels}x0e + {self.hidden_channels//4}x1o")
+        
+        self.embedding = o3.Linear(irr_input, irr_hidden)
+        
+        self.equiformer_layers = nn.ModuleList([
+            # Using a simplified placeholder block for demonstration
+            # Real implementation requires full TP + Spherical Harmonics setup
+            o3.Linear(irr_hidden, irr_hidden) 
+            for _ in range(self.num_layers)
+        ])
+
+
     # ========== Forward Passes (Optimized) ==========
 
     def forward(self, x, pos, edge_index, batch, 
@@ -312,13 +356,15 @@ class BaseGNN(nn.Module):
             'se3_transformer': self._forward_se3_transformer,
             'nequip': self._forward_nequip,
             'clofnet': self._forward_clofnet,
+            'graphormer': self._forward_graphormer,
+            'equiformer': self._forward_equiformer,
         }
 
         return forward_methods[self.model_type](
             x, pos, edge_index, batch, return_layer_outputs, return_node_embeddings
         )
 
-    def _forward_raw_mlp(self, x, pos, batch, return_layer_outputs, return_node_embeddings):
+    def _forward_raw_mlp(self, x, pos, edge_index, batch, return_layer_outputs, return_node_embeddings):
         """OPTIMIZED: Avoid redundant concatenation"""
         layer_outputs = []
         x_with_pos = torch.cat([x, pos], dim=-1)
@@ -365,17 +411,16 @@ class BaseGNN(nn.Module):
         
         for i, (conv, bn) in enumerate(zip(self.convs, self.batch_norms)):
             x = conv(x, edge_index)
-            
+            x = bn(x)
+            x = F.relu(x)
+            # Capture HERE (Post-activation, Pre-dropout)
             if return_layer_outputs:
                 layer_outputs.append({
                     'layer_idx': i,
-                    'representation': x.detach().clone(),
+                    'representation': x.detach().clone() if not self.training else x, # clone if needed
                     'edge_index': edge_index,
                     'batch': batch
                 })
-            
-            x = bn(x)
-            x = F.relu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
         
         if return_node_embeddings:
@@ -597,6 +642,60 @@ class BaseGNN(nn.Module):
         
         x = global_mean_pool(x, batch)
         out = self.predictor(x)
+        return (out, layer_outputs) if return_layer_outputs else out
+    
+    def _forward_graphormer(self, x, pos, edge_index, batch, return_layer_outputs, return_node_embeddings):
+        layer_outputs = []
+        x = self.embedding(x)
+        
+        # Note: Real Graphormer pre-computes shortest paths. 
+        # Passing None disables spatial encoding for this prototype.
+        shortest_paths = None 
+        
+        for i, layer in enumerate(self.graphormer_layers):
+            x = layer(x, edge_index, batch, shortest_paths)
+            
+            if return_layer_outputs:
+                layer_outputs.append({
+                    'layer_idx': i,
+                    'representation': x.detach().clone(),
+                    'edge_index': edge_index, 
+                    'batch': batch
+                })
+                
+        if return_node_embeddings:
+            return (x, layer_outputs) if return_layer_outputs else x
+            
+        x = global_mean_pool(x, batch)
+        out = self.predictor(x)
+        return (out, layer_outputs) if return_layer_outputs else out
+
+    def _forward_equiformer(self, x, pos, edge_index, batch, return_layer_outputs, return_node_embeddings):
+        layer_outputs = []
+        # x needs to be strictly compliant with e3nn Irreps
+        x = self.embedding(x)
+        
+        for i, layer in enumerate(self.equiformer_layers):
+            # Ideally pass spherical harmonics of edge_vec here
+            x = layer(x) 
+            
+            if return_layer_outputs:
+                layer_outputs.append({
+                    'layer_idx': i,
+                    'representation': x.detach().clone(), # This is an Irreps tensor
+                    'edge_index': edge_index,
+                    'batch': batch
+                })
+        
+        # Extract scalars for final prediction (0e irreps)
+        # Assuming first slice is scalars
+        x_scalars = x[:, :self.hidden_channels] 
+        
+        if return_node_embeddings:
+            return (x_scalars, layer_outputs) if return_layer_outputs else x_scalars
+            
+        x_pool = global_mean_pool(x_scalars, batch)
+        out = self.predictor(x_pool)
         return (out, layer_outputs) if return_layer_outputs else out
 
     def build_local_frames(self, pos: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
@@ -1069,3 +1168,162 @@ class ClofLayer(nn.Module):
         
         x_out = self.update_mlp(torch.cat([x, x_out], dim=-1))
         return x + x_out
+    
+
+class GraphormerLayer(nn.Module):
+    """
+    Simplified Graphormer Layer with Centrality and Spatial Encodings.
+    Reference: "Do Transformers Really Perform Bad for Graph Representation?" (Ying et al., 2021)
+    """
+    def __init__(self, in_channels, hidden_channels, num_heads, dropout=0.1, max_degree=128, max_path_distance=20):
+        super().__init__()
+        self.num_heads = num_heads
+        self.hidden_channels = hidden_channels
+        
+        # Attention mechanism
+        self.attention = nn.MultiheadAttention(
+            embed_dim=hidden_channels, 
+            num_heads=num_heads, 
+            dropout=dropout, 
+            batch_first=True
+        )
+        
+        # Centrality Encoding (z_deg-) + (z_deg+)
+        self.z_deg_in = nn.Embedding(max_degree, hidden_channels)
+        self.z_deg_out = nn.Embedding(max_degree, hidden_channels)
+        
+        # Spatial Encoding (b_phi) - Bias added to attention scores
+        self.spatial_encoding = nn.Embedding(max_path_distance, num_heads)
+        self.inf_encoding = nn.Parameter(torch.zeros(num_heads)) # For unreachable nodes
+        
+        # Feed Forward
+        self.norm1 = nn.LayerNorm(hidden_channels)
+        self.norm2 = nn.LayerNorm(hidden_channels)
+        self.ffn = nn.Sequential(
+            nn.Linear(hidden_channels, hidden_channels * 4),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_channels * 4, hidden_channels),
+            nn.Dropout(dropout)
+        )
+        self.max_path_distance = max_path_distance
+
+    def forward(self, x, edge_index, batch, shortest_path_dists=None):
+        # x: [num_nodes, hidden_channels]
+        # Note: Graphormer requires dense batching for efficient attention
+        
+        # 1. Centrality Encoding
+        # Compute degrees (undirected for simplicity, or use in/out for directed)
+        deg = degree(edge_index[0], x.size(0), dtype=torch.long)
+        x = x + self.z_deg_in(deg.clamp(max=self.z_deg_in.num_embeddings - 1))
+        x = x + self.z_deg_out(deg.clamp(max=self.z_deg_out.num_embeddings - 1))
+        
+        # 2. Dense Conversion
+        # x_dense: [batch_size, max_nodes, hidden_channels]
+        # mask: [batch_size, max_nodes] (True for real nodes, False for padding)
+        x_dense, mask = to_dense_batch(x, batch)
+        
+        # 3. Spatial Encoding (Attention Bias)
+        # We need shortest path distances between all pairs in the dense batch
+        # Calculating this on the fly is expensive; usually precomputed in dataset
+        # Here we implement a basic placeholder or assume it's passed
+        attn_bias = torch.zeros(x_dense.size(0), self.num_heads, x_dense.size(1), x_dense.size(1), device=x.device)
+        
+        if shortest_path_dists is not None:
+            # shortest_path_dists: [batch_size, max_nodes, max_nodes]
+            # Map distances to bias
+            spd_clamped = shortest_path_dists.clamp(min=0, max=self.max_path_distance - 1).long()
+            # [batch, N, N, heads] -> permute to [batch, heads, N, N]
+            spatial_bias = self.spatial_encoding(spd_clamped).permute(0, 3, 1, 2)
+            
+            # Handle unreachable (distance = -1 or inf)
+            unreachable_mask = (shortest_path_dists < 0)
+            spatial_bias[unreachable_mask.unsqueeze(1).expand_as(spatial_bias)] = self.inf_encoding.view(1, -1, 1, 1)
+            
+            attn_bias = attn_bias + spatial_bias
+
+        # Add padding mask to attention bias (set padding positions to -inf)
+        # mask is True for real nodes. attn_mask expects True for values to IGNORE (in some PyTorch versions)
+        # PyTorch MultiheadAttention key_padding_mask: True for elements to ignore
+        
+        # 4. Self-Attention
+        # x_dense is [Batch, Seq, Dim]
+        x_residual = x_dense
+        
+        # Note: PyTorch's MultiheadAttention doesn't easily accept a [Batch, Heads, N, N] bias tensor 
+        # directly in the `attn_mask` argument without newer versions (2.0+ SDP attention).
+        # We will use a simplified standard attention here.
+        
+        x_dense, _ = self.attention(
+            x_dense, x_dense, x_dense, 
+            key_padding_mask=~mask # Invert mask: True for padding
+        )
+        
+        x_dense = self.norm1(x_residual + x_dense)
+        
+        # 5. FFN
+        x_dense = self.norm2(x_dense + self.ffn(x_dense))
+        
+        # 6. Convert back to sparse (recover original node order)
+        x_out = x_dense[mask]
+        
+        return x_out
+
+class EquiformerBlock(nn.Module):
+    """
+    Equivariant Graph Attention Transformer (Equiformer).
+    Uses e3nn for SO(3)/E(3) tensor products.
+    """
+    def __init__(self, irr_in, irr_out, max_ell=2, num_heads=4):
+        super().__init__()
+        if not HAS_E3NN:
+            raise ImportError("Equiformer requires e3nn. Install with `pip install e3nn`")
+            
+        self.irr_in = o3.Irreps(irr_in)
+        self.irr_out = o3.Irreps(irr_out)
+        self.num_heads = num_heads
+        
+        # Linear layers for Q, K, V (Tensor Products)
+        # We map inputs to hidden irreps
+        self.irr_hidden = o3.Irreps(f"{32}x0e + {16}x1o + {8}x2e") # Example hidden representation
+        
+        self.lin_q = o3.Linear(self.irr_in, self.irr_hidden)
+        self.lin_k = o3.Linear(self.irr_in, self.irr_hidden)
+        self.lin_v = o3.Linear(self.irr_in, self.irr_hidden)
+        
+        # Tensor Product for Attention (Query * Key)
+        self.tp_k_q = o3.FullyConnectedTensorProduct(
+            self.irr_hidden, self.irr_hidden, self.irr_hidden
+        )
+        
+        # Output projection
+        self.lin_out = o3.Linear(self.irr_hidden, self.irr_out)
+        
+        # Non-linearity (Gate)
+        self.act = o3.Gate(
+            self.irr_hidden, [torch.relu], 
+            self.irr_hidden, [torch.sigmoid], 
+            self.irr_hidden, [torch.tanh]
+        ) # Note: Configuring Gates correctly requires precise matching of scalars/vectors
+
+    def forward(self, x, pos, edge_index):
+        # x: features [num_nodes, dim] (Needs to be converted to Irreps format if raw)
+        # pos: coordinates [num_nodes, 3]
+        
+        row, col = edge_index
+        edge_vec = pos[row] - pos[col]
+        
+        # 1. Linear Projections
+        q = self.lin_q(x)
+        k = self.lin_k(x)
+        v = self.lin_v(x)
+        
+        # 2. Attention Mechanism (Simplified Dot Product)
+        # In real Equiformer, this involves Spherical Harmonics of edge_vec
+        # mixed with DotProduct attention.
+        
+        # For this prototype, we will return linear projection to satisfy the pipeline API
+        # A full Equiformer requires ~300 lines of tensor product setup.
+        out = self.lin_out(q) 
+        return out
+
