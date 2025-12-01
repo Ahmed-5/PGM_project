@@ -527,7 +527,10 @@ def train(config: ExperimentConfig) -> tuple:
         )
     elif config.scheduler.lr_schedule == 'plateau':
         lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, patience=config.scheduler.plateau_patience, factor=config.scheduler.plateau_factor
+            optimizer, 
+            patience=config.scheduler.plateau_patience, 
+            factor=config.scheduler.plateau_factor,
+            mode=config.scheduler.plateau_mode
         )
     elif config.scheduler.lr_schedule == 'exponential':
         lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(

@@ -100,6 +100,7 @@ class SchedulerConfig:
 
     plateau_patience: int = 5  # For 'plateau' lr_schedule
     plateau_factor: float = 0.5  # For 'plateau' lr_schedule
+    plateau_mode: Literal['min', 'max'] = 'min'  # For 'plateau' lr_schedule
 
     exponential_decay_rate: float = 0.95  # For 'exponential' lr_schedule
 
