@@ -390,6 +390,8 @@ def train(config: ExperimentConfig) -> tuple:
     # Initialize logger
     logger = get_logger(config)
 
+    print("Device:", config.device)
+
     # Load datasets
     print(f"\nLoading datasets... ({config.data.dataset_name})")
     train_dataset, val_dataset, test_dataset = load_dataset(config)
