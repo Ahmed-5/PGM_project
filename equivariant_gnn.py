@@ -29,7 +29,6 @@ try:
 except ImportError:
     HAS_E3NN = False
 
-
 class BaseGNN(nn.Module):
     """
     Optimized unified GNN architecture supporting multiple model types with GPU acceleration.
@@ -80,6 +79,7 @@ class BaseGNN(nn.Module):
             'schnet', 'dimenet', 'egnn', 'painn',
             'vector_neuron', 'se3_transformer', 'nequip', 'clofnet'
         }
+        
         if self.model_type not in valid_models:
             raise ValueError(f"model_type must be one of {valid_models}")
 
@@ -104,9 +104,10 @@ class BaseGNN(nn.Module):
 
         # Call appropriate builder
         builders[self.model_type]()
-        
+
         # Output predictor (common for most models)
         self._build_predictor()
+
 
     # ========== Model Builders ==========
 
@@ -114,36 +115,31 @@ class BaseGNN(nn.Module):
         """MLP using raw coordinates - no symmetry"""
         input_dim = self.in_channels + self.spatial_dim
         layers = []
-        
         # Input layer
         layers.append(nn.Linear(input_dim, self.hidden_channels))
         layers.append(nn.ReLU())
         layers.append(nn.Dropout(self.dropout))
-        
         # Hidden layers
         for _ in range(self.num_layers - 2):
             layers.append(nn.Linear(self.hidden_channels, self.hidden_channels))
             layers.append(nn.ReLU())
             layers.append(nn.Dropout(self.dropout))
-        
         self.mlp = nn.Sequential(*layers)
 
     def _build_transformer(self, num_heads):
         """Transformer with positional encoding - permutation only"""
         self.pos_encoder = nn.Linear(self.spatial_dim, self.hidden_channels)
         self.feat_encoder = nn.Linear(self.in_channels, self.hidden_channels)
-        
         self.convs = nn.ModuleList([
             TransformerConv(
-                self.hidden_channels,
-                self.hidden_channels // num_heads,
-                heads=num_heads,
+                self.hidden_channels, 
+                self.hidden_channels // num_heads, 
+                heads=num_heads, 
                 dropout=self.dropout,
                 concat=True
             )
             for _ in range(self.num_layers)
         ])
-        
         self.batch_norms = nn.ModuleList([
             nn.BatchNorm1d(self.hidden_channels)
             for _ in range(self.num_layers)
@@ -189,12 +185,10 @@ class BaseGNN(nn.Module):
         self.embedding = nn.Linear(self.in_channels, self.hidden_channels)
         self.distance_expansion = GaussianSmearing(0.0, cutoff, num_gaussians)
         self.cutoff = cutoff
-
         self.interactions = nn.ModuleList([
             SchNetInteraction(self.hidden_channels, num_gaussians, cutoff)
             for _ in range(self.num_layers)
         ])
-
         self.batch_norms = nn.ModuleList([
             nn.BatchNorm1d(self.hidden_channels)
             for _ in range(self.num_layers)
@@ -206,12 +200,10 @@ class BaseGNN(nn.Module):
         self.distance_expansion = GaussianSmearing(0.0, cutoff, num_gaussians)
         self.angle_expansion = SphericalBasisLayer(num_spherical, num_gaussians)
         self.cutoff = cutoff
-
         self.interactions = nn.ModuleList([
             DimeNetInteraction(self.hidden_channels, num_gaussians, num_spherical)
             for _ in range(self.num_layers)
         ])
-
         self.batch_norms = nn.ModuleList([
             nn.BatchNorm1d(self.hidden_channels)
             for _ in range(self.num_layers)
@@ -221,12 +213,10 @@ class BaseGNN(nn.Module):
         """EGNN - E(3) equivariant"""
         self.embedding = nn.Linear(self.in_channels, self.hidden_channels)
         self.update_coords = update_coords
-
         self.egnn_layers = nn.ModuleList([
             EGNNLayer(self.hidden_channels, self.hidden_channels, update_coords=update_coords)
             for _ in range(self.num_layers)
         ])
-
         self.batch_norms = nn.ModuleList([
             nn.BatchNorm1d(self.hidden_channels)
             for _ in range(self.num_layers)
@@ -236,7 +226,6 @@ class BaseGNN(nn.Module):
         """PaiNN - E(3) equivariant with scalar/vector features"""
         self.scalar_embedding = nn.Linear(self.in_channels, self.hidden_channels)
         self.vector_embedding = nn.Linear(self.spatial_dim, self.hidden_channels)
-
         self.painn_layers = nn.ModuleList([
             PaiNNLayer(self.hidden_channels)
             for _ in range(self.num_layers)
@@ -255,7 +244,6 @@ class BaseGNN(nn.Module):
         """SE(3)-Transformer - SE(3) equivariant attention"""
         self.fiber_hidden = {0: self.hidden_channels, 1: self.hidden_channels // 3}
         self.embedding = nn.Linear(self.in_channels, self.hidden_channels)
-
         self.se3_layers = nn.ModuleList([
             SE3TransformerLayer(self.fiber_hidden, self.fiber_hidden, num_heads=num_heads)
             for _ in range(self.num_layers)
@@ -265,26 +253,22 @@ class BaseGNN(nn.Module):
         """NequIP - E(3) equivariant with tensor products"""
         self.embedding = nn.Linear(self.in_channels, self.hidden_channels)
         self.spherical_harmonics = SphericalHarmonicBasis(max_ell)
-
         self.nequip_layers = nn.ModuleList([
             NequIPLayer(self.hidden_channels, max_ell)
             for _ in range(self.num_layers)
         ])
-
         self.batch_norms = nn.ModuleList([
             nn.BatchNorm1d(self.hidden_channels)
             for _ in range(self.num_layers)
         ])
-
+    
     def _build_clofnet(self):
         """ClofNet - SE(3) with local frames"""
         self.embedding = nn.Linear(self.in_channels, self.hidden_channels)
-
         self.clof_layers = nn.ModuleList([
             ClofLayer(self.hidden_channels)
             for _ in range(self.num_layers)
         ])
-
         self.batch_norms = nn.ModuleList([
             nn.BatchNorm1d(self.hidden_channels)
             for _ in range(self.num_layers)
@@ -302,19 +286,18 @@ class BaseGNN(nn.Module):
     def _build_graphormer(self, num_heads):
         """Graphormer - Graph Transformer with structural encodings"""
         self.embedding = nn.Linear(self.in_channels, self.hidden_channels)
-        
         self.graphormer_layers = nn.ModuleList([
             GraphormerLayer(self.hidden_channels, self.hidden_channels, num_heads=num_heads)
             for _ in range(self.num_layers)
         ])
         # Helper to get shortest paths (optional, naive implementation)
-        self.compute_shortest_paths = True 
+        self.compute_shortest_paths = True
 
     def _build_equiformer(self, max_ell):
         """Equiformer - Requires e3nn"""
         if not HAS_E3NN:
             raise ImportError("Equiformer selected but e3nn not installed.")
-            
+        
         # Define Irreps: 0e (scalar), 1o (vector), 2e (tensor)
         # Input: scalars (features) + vectors (if pos used as feat)
         irr_input = o3.Irreps(f"{self.in_channels}x0e")
@@ -325,10 +308,9 @@ class BaseGNN(nn.Module):
         self.equiformer_layers = nn.ModuleList([
             # Using a simplified placeholder block for demonstration
             # Real implementation requires full TP + Spherical Harmonics setup
-            o3.Linear(irr_hidden, irr_hidden) 
+            o3.Linear(irr_hidden, irr_hidden)
             for _ in range(self.num_layers)
         ])
-
 
     # ========== Forward Passes (Optimized) ==========
 
@@ -336,11 +318,17 @@ class BaseGNN(nn.Module):
                 return_layer_outputs=False, return_node_embeddings=False):
         """
         Universal forward pass for all model types.
-        
+
         Args:
             return_node_embeddings: If True, return [num_nodes, hidden_dim] before pooling.
                                    If False (default), return [num_graphs, out_dim] after pooling.
         """
+        # If input features x are None (common in some MD datasets), initialize them
+        if x is None:
+            # Assuming pos can serve as feature or use embedding if categorical
+            # Here we assume we must have features; caller should handle
+            raise ValueError("Node features x cannot be None")
+
         # Dictionary-based forward routing (more efficient than if-elif)
         forward_methods = {
             'raw_mlp': self._forward_raw_mlp,
@@ -368,13 +356,12 @@ class BaseGNN(nn.Module):
         """OPTIMIZED: Avoid redundant concatenation"""
         layer_outputs = []
         x_with_pos = torch.cat([x, pos], dim=-1)
-        
         graph_features = global_mean_pool(x_with_pos, batch)
         out = self.mlp(graph_features)
         
         if return_node_embeddings:
             return (x_with_pos, layer_outputs) if return_layer_outputs else x_with_pos
-        
+            
         out = self.predictor(out)
         return (out, layer_outputs) if return_layer_outputs else out
 
@@ -382,9 +369,9 @@ class BaseGNN(nn.Module):
         """OPTIMIZED: Single encoding step instead of separate pos/feat encoding"""
         layer_outputs = []
         x = self.feat_encoder(x) + self.pos_encoder(pos)
-        
+
         for i, (conv, bn) in enumerate(zip(self.convs, self.batch_norms)):
-            x = conv(x, edge_index)
+            x = conv(x, edge_index.long())  # Cast edge_index to long
             
             if return_layer_outputs:
                 layer_outputs.append({
@@ -393,14 +380,14 @@ class BaseGNN(nn.Module):
                     'edge_index': edge_index,
                     'batch': batch
                 })
-            
+                
             x = bn(x)
             x = F.relu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
-        
+
         if return_node_embeddings:
             return (x, layer_outputs) if return_layer_outputs else x
-        
+
         x = global_mean_pool(x, batch)
         out = self.predictor(x)
         return (out, layer_outputs) if return_layer_outputs else out
@@ -410,9 +397,12 @@ class BaseGNN(nn.Module):
         layer_outputs = []
         
         for i, (conv, bn) in enumerate(zip(self.convs, self.batch_norms)):
-            x = conv(x, edge_index)
+            # --- FIX: Ensure edge_index is long ---
+            x = conv(x, edge_index.long())
+            # --------------------------------------
             x = bn(x)
             x = F.relu(x)
+            
             # Capture HERE (Post-activation, Pre-dropout)
             if return_layer_outputs:
                 layer_outputs.append({
@@ -421,11 +411,12 @@ class BaseGNN(nn.Module):
                     'edge_index': edge_index,
                     'batch': batch
                 })
+
             x = F.dropout(x, p=self.dropout, training=self.training)
-        
+
         if return_node_embeddings:
             return (x, layer_outputs) if return_layer_outputs else x
-        
+
         x = global_mean_pool(x, batch)
         out = self.predictor(x)
         return (out, layer_outputs) if return_layer_outputs else out
@@ -434,7 +425,7 @@ class BaseGNN(nn.Module):
         """OPTIMIZED: Vectorized interaction layers"""
         layer_outputs = []
         x = self.embedding(x)
-        
+
         for i, (interaction, bn) in enumerate(zip(self.interactions, self.batch_norms)):
             x = interaction(x, pos, edge_index)
             
@@ -445,14 +436,14 @@ class BaseGNN(nn.Module):
                     'edge_index': edge_index,
                     'batch': batch
                 })
-            
+
             x = bn(x)
             x = F.relu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
-        
+
         if return_node_embeddings:
             return (x, layer_outputs) if return_layer_outputs else x
-        
+
         x = global_add_pool(x, batch)
         out = self.predictor(x)
         return (out, layer_outputs) if return_layer_outputs else out
@@ -472,14 +463,14 @@ class BaseGNN(nn.Module):
                     'edge_index': edge_index,
                     'batch': batch
                 })
-            
+
             x = bn(x)
             x = F.relu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
-        
+
         if return_node_embeddings:
             return (x, layer_outputs) if return_layer_outputs else x
-        
+
         x = global_add_pool(x, batch)
         out = self.predictor(x)
         return (out, layer_outputs) if return_layer_outputs else out
@@ -488,7 +479,7 @@ class BaseGNN(nn.Module):
         """OPTIMIZED: Vectorized EGNN layers"""
         layer_outputs = []
         x = self.embedding(x)
-        
+
         for i, (egnn_layer, bn) in enumerate(zip(self.egnn_layers, self.batch_norms)):
             x, pos = egnn_layer(x, pos, edge_index)
             
@@ -500,14 +491,14 @@ class BaseGNN(nn.Module):
                     'edge_index': edge_index,
                     'batch': batch
                 })
-            
+
             x = bn(x)
             x = F.relu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
-        
+
         if return_node_embeddings:
             return (x, layer_outputs) if return_layer_outputs else x
-        
+
         x = global_mean_pool(x, batch)
         out = self.predictor(x)
         return (out, layer_outputs) if return_layer_outputs else out
@@ -517,7 +508,7 @@ class BaseGNN(nn.Module):
         layer_outputs = []
         s = self.scalar_embedding(x)
         v = self.vector_embedding(pos).unsqueeze(-1)
-        
+
         for i, painn_layer in enumerate(self.painn_layers):
             s, v = painn_layer(s, v, pos, edge_index)
             
@@ -529,12 +520,12 @@ class BaseGNN(nn.Module):
                     'edge_index': edge_index,
                     'batch': batch
                 })
-            
-            s = F.dropout(s, p=self.dropout, training=self.training)
+
+        s = F.dropout(s, p=self.dropout, training=self.training)
         
         if return_node_embeddings:
             return (s, layer_outputs) if return_layer_outputs else s
-        
+
         s = global_mean_pool(s, batch)
         out = self.predictor(s)
         return (out, layer_outputs) if return_layer_outputs else out
@@ -543,7 +534,7 @@ class BaseGNN(nn.Module):
         """OPTIMIZED: Vectorized vector neuron layers"""
         layer_outputs = []
         v = self.vn_embedding(x, pos)
-        
+
         for i, vn_layer in enumerate(self.vn_layers):
             v = vn_layer(v, pos, edge_index)
             
@@ -554,14 +545,13 @@ class BaseGNN(nn.Module):
                     'edge_index': edge_index,
                     'batch': batch
                 })
-            
-            v = F.dropout(v, p=self.dropout, training=self.training)
-        
+
+        v = F.dropout(v, p=self.dropout, training=self.training)
         x_inv = self.invariant_pooling(v)
         
         if return_node_embeddings:
             return (x_inv, layer_outputs) if return_layer_outputs else x_inv
-        
+
         x_inv = global_mean_pool(x_inv, batch)
         out = self.predictor(x_inv)
         return (out, layer_outputs) if return_layer_outputs else out
@@ -570,7 +560,7 @@ class BaseGNN(nn.Module):
         """OPTIMIZED: Vectorized SE3-Transformer layers"""
         layer_outputs = []
         features = {0: self.embedding(x)}
-        
+
         for i, se3_layer in enumerate(self.se3_layers):
             features = se3_layer(features, pos, edge_index)
             
@@ -581,12 +571,12 @@ class BaseGNN(nn.Module):
                     'edge_index': edge_index,
                     'batch': batch
                 })
-            
-            features[0] = F.dropout(features[0], p=self.dropout, training=self.training)
+
+        features[0] = F.dropout(features[0], p=self.dropout, training=self.training)
         
         if return_node_embeddings:
             return (features[0], layer_outputs) if return_layer_outputs else features[0]
-        
+
         x = global_mean_pool(features[0], batch)
         out = self.predictor(x)
         return (out, layer_outputs) if return_layer_outputs else out
@@ -595,7 +585,7 @@ class BaseGNN(nn.Module):
         """OPTIMIZED: Vectorized NequIP layers"""
         layer_outputs = []
         x = self.embedding(x)
-        
+
         for i, (nequip_layer, bn) in enumerate(zip(self.nequip_layers, self.batch_norms)):
             x = nequip_layer(x, pos, edge_index, self.spherical_harmonics)
             
@@ -606,13 +596,13 @@ class BaseGNN(nn.Module):
                     'edge_index': edge_index,
                     'batch': batch
                 })
-            
+
             x = bn(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
-        
+
         if return_node_embeddings:
             return (x, layer_outputs) if return_layer_outputs else x
-        
+
         x = global_add_pool(x, batch)
         out = self.predictor(x)
         return (out, layer_outputs) if return_layer_outputs else out
@@ -622,7 +612,7 @@ class BaseGNN(nn.Module):
         layer_outputs = []
         x = self.embedding(x)
         frames = self.build_local_frames(pos, edge_index)
-        
+
         for i, (clof_layer, bn) in enumerate(zip(self.clof_layers, self.batch_norms)):
             x = clof_layer(x, pos, edge_index, frames)
             
@@ -633,17 +623,17 @@ class BaseGNN(nn.Module):
                     'edge_index': edge_index,
                     'batch': batch
                 })
-            
+
             x = bn(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
-        
+
         if return_node_embeddings:
             return (x, layer_outputs) if return_layer_outputs else x
-        
+
         x = global_mean_pool(x, batch)
         out = self.predictor(x)
         return (out, layer_outputs) if return_layer_outputs else out
-    
+
     def _forward_graphormer(self, x, pos, edge_index, batch, return_layer_outputs, return_node_embeddings):
         layer_outputs = []
         x = self.embedding(x)
@@ -651,7 +641,7 @@ class BaseGNN(nn.Module):
         # Note: Real Graphormer pre-computes shortest paths. 
         # Passing None disables spatial encoding for this prototype.
         shortest_paths = None 
-        
+
         for i, layer in enumerate(self.graphormer_layers):
             x = layer(x, edge_index, batch, shortest_paths)
             
@@ -659,13 +649,13 @@ class BaseGNN(nn.Module):
                 layer_outputs.append({
                     'layer_idx': i,
                     'representation': x.detach().clone(),
-                    'edge_index': edge_index, 
+                    'edge_index': edge_index,
                     'batch': batch
                 })
-                
+
         if return_node_embeddings:
             return (x, layer_outputs) if return_layer_outputs else x
-            
+
         x = global_mean_pool(x, batch)
         out = self.predictor(x)
         return (out, layer_outputs) if return_layer_outputs else out
@@ -677,7 +667,7 @@ class BaseGNN(nn.Module):
         
         for i, layer in enumerate(self.equiformer_layers):
             # Ideally pass spherical harmonics of edge_vec here
-            x = layer(x) 
+            x = layer(x)
             
             if return_layer_outputs:
                 layer_outputs.append({
@@ -689,14 +679,15 @@ class BaseGNN(nn.Module):
         
         # Extract scalars for final prediction (0e irreps)
         # Assuming first slice is scalars
-        x_scalars = x[:, :self.hidden_channels] 
+        x_scalars = x[:, :self.hidden_channels]
         
         if return_node_embeddings:
             return (x_scalars, layer_outputs) if return_layer_outputs else x_scalars
-            
+
         x_pool = global_mean_pool(x_scalars, batch)
         out = self.predictor(x_pool)
         return (out, layer_outputs) if return_layer_outputs else out
+
 
     def build_local_frames(self, pos: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
         """
@@ -707,13 +698,16 @@ class BaseGNN(nn.Module):
         device = pos.device
         
         # Compute relative vectors for all edges at once
-        rel_vecs = pos[col] - pos[row]  # [num_edges, 3]
+        rel_vecs = pos[col] - pos[row] # [num_edges, 3]
         
         # Construct frames using Gram-Schmidt orthogonalization (vectorized)
         # For each node, aggregate edges to build frame
         frames = torch.zeros(num_nodes, 3, 3, device=device)
         
         # Build orthonormal frame from first two neighbors
+        # This is still semi-iterative because we need per-node neighbor selection
+        # For a truly vectorized version, we would need max_neighbors padding
+        # Here we stick to a safe implementation that works for now
         for i in range(num_nodes):
             mask = (row == i)
             neighbor_edges = col[mask]
@@ -736,7 +730,7 @@ class BaseGNN(nn.Module):
             else:
                 # Default identity frame
                 frames[i] = torch.eye(3, device=device)
-        
+                
         return frames
 
     def get_symmetry_info(self) -> Dict:
@@ -758,7 +752,6 @@ class BaseGNN(nn.Module):
             'graphormer': {'permutation': True, 'rotation': 'Equivariant', 'translation': 'Equivariant', 'level': 'E(3) equivariant'},
             'equiformer': {'permutation': True, 'rotation': 'Equivariant', 'translation': 'Equivariant', 'level': 'E(3) equivariant'},
         }
-        
         return symmetry_map.get(self.model_type, {})
 
 
@@ -779,7 +772,6 @@ class GaussianSmearing(nn.Module):
         dist = dist.view(-1, 1) - self.offset.view(1, -1)
         return torch.exp(self.coeff * torch.pow(dist, 2))
 
-
 class SchNetInteraction(nn.Module):
     """
     OPTIMIZED: SchNet layer with vectorized scatter operations
@@ -789,13 +781,11 @@ class SchNetInteraction(nn.Module):
         super().__init__()
         self.cutoff = cutoff
         self.distance_expansion = GaussianSmearing(0.0, cutoff, num_gaussians)
-        
         self.filter_network = nn.Sequential(
             nn.Linear(num_gaussians, hidden_channels),
             nn.ReLU(),
             nn.Linear(hidden_channels, hidden_channels)
         )
-        
         self.interaction_mlp = nn.Sequential(
             nn.Linear(hidden_channels, hidden_channels),
             nn.ReLU(),
@@ -817,11 +807,10 @@ class SchNetInteraction(nn.Module):
         # Vectorized aggregation with scatter_add
         num_nodes = x.shape[0]
         x_out = torch.zeros_like(x)
-        x_out.index_add_(0, row, messages.to(x_out.dtype))
+        x_out.index_add_(0, row, messages.to(x_out.dtype)) # <--- Added Cast
         
         x_out = self.interaction_mlp(x_out)
         return x + x_out
-
 
 class DimeNetInteraction(nn.Module):
     """
@@ -829,20 +818,18 @@ class DimeNetInteraction(nn.Module):
     """
     def __init__(self, hidden_channels: int, num_gaussians: int, num_spherical: int):
         super().__init__()
-        
         self.message_mlp = nn.Sequential(
             nn.Linear(num_gaussians + num_spherical, hidden_channels),
             nn.ReLU(),
             nn.Linear(hidden_channels, hidden_channels)
         )
-        
         self.update_mlp = nn.Sequential(
             nn.Linear(hidden_channels * 2, hidden_channels),
             nn.ReLU(),
             nn.Linear(hidden_channels, hidden_channels)
         )
 
-    def forward(self, x: torch.Tensor, pos: torch.Tensor, edge_index: torch.Tensor,
+    def forward(self, x: torch.Tensor, pos: torch.Tensor, edge_index: torch.Tensor, 
                 distance_expansion, angle_expansion) -> torch.Tensor:
         """OPTIMIZED: Fully vectorized"""
         row, col = edge_index
@@ -861,11 +848,10 @@ class DimeNetInteraction(nn.Module):
         # Vectorized aggregation
         num_nodes = x.shape[0]
         x_out = torch.zeros_like(x)
-        x_out.index_add_(0, row, messages.to(x_out.dtype))
+        x_out.index_add_(0, row, messages.to(x_out.dtype)) # <--- Added Cast
         
         x_out = self.update_mlp(torch.cat([x, x_out], dim=-1))
         return x + x_out
-
 
 class SphericalBasisLayer(nn.Module):
     """Placeholder for spherical harmonics"""
@@ -876,7 +862,6 @@ class SphericalBasisLayer(nn.Module):
     def forward(self, angles: torch.Tensor) -> torch.Tensor:
         return torch.randn(angles.shape[0], self.num_spherical, device=angles.device, dtype=angles.dtype)
 
-
 class EGNNLayer(nn.Module):
     """
     OPTIMIZED: EGNN layer with vectorized scatter operations
@@ -884,19 +869,16 @@ class EGNNLayer(nn.Module):
     def __init__(self, in_channels: int, out_channels: int, update_coords: bool = True):
         super().__init__()
         self.update_coords = update_coords
-        
         self.edge_mlp = nn.Sequential(
             nn.Linear(in_channels * 2 + 1, out_channels),
             nn.ReLU(),
             nn.Linear(out_channels, out_channels)
         )
-        
         self.node_mlp = nn.Sequential(
             nn.Linear(in_channels + out_channels, out_channels),
             nn.ReLU(),
             nn.Linear(out_channels, out_channels)
         )
-        
         if update_coords:
             self.coord_mlp = nn.Sequential(
                 nn.Linear(out_channels, out_channels),
@@ -912,27 +894,23 @@ class EGNNLayer(nn.Module):
         rel_pos = x[row] - x[col]
         dist_sq = torch.sum(rel_pos ** 2, dim=1, keepdim=True)
         edge_feat = torch.cat([h[row], h[col], dist_sq], dim=-1)
-        
         edge_emb = self.edge_mlp(edge_feat)
         
         # Vectorized message aggregation
         num_nodes = h.shape[0]
         messages = torch.zeros(num_nodes, edge_emb.shape[1], device=h.device, dtype=h.dtype)
-        # messages.index_add_(0, row, edge_emb)
-        messages.index_add_(0, row, edge_emb.to(messages.dtype))
+        messages.index_add_(0, row, edge_emb.to(messages.dtype)) # <--- Added Cast
         
         h_new = self.node_mlp(torch.cat([h, messages], dim=-1))
-        
         x_new = x
+        
         if self.update_coords:
             coord_weights = self.coord_mlp(edge_emb)
             coord_update = torch.zeros_like(x)
-            # coord_update.index_add_(0, row, rel_pos * coord_weights)
-            coord_update.index_add_(0, row, (rel_pos * coord_weights).to(coord_update.dtype))
+            coord_update.index_add_(0, row, (rel_pos * coord_weights).to(coord_update.dtype)) # <--- Added Cast
             x_new = x + coord_update
-        
+            
         return h_new, x_new
-
 
 class PaiNNLayer(nn.Module):
     """
@@ -941,13 +919,11 @@ class PaiNNLayer(nn.Module):
     """
     def __init__(self, hidden_channels: int):
         super().__init__()
-        
         self.message_scalar = nn.Sequential(
             nn.Linear(hidden_channels, hidden_channels),
             nn.SiLU(),
             nn.Linear(hidden_channels, hidden_channels * 3)
         )
-        
         self.update_net = nn.Sequential(
             nn.Linear(hidden_channels * 2, hidden_channels),
             nn.SiLU(),
@@ -973,10 +949,10 @@ class PaiNNLayer(nn.Module):
         s_msg = scatter_add(msg_s, row, dim=0, dim_size=num_nodes)
         
         # Vectorized vector aggregation (reshape for scatter)
-        v_msg = msg_v1.unsqueeze(-1) * dir_vec.unsqueeze(1)  # [E, hidden, 3]
-        v_msg_flat = v_msg.reshape(v_msg.shape[0], -1)  # [E, hidden*3]
+        v_msg = msg_v1.unsqueeze(-1) * dir_vec.unsqueeze(1) # [E, hidden, 3]
+        v_msg_flat = v_msg.reshape(v_msg.shape[0], -1) # [E, hidden*3]
         v_update_flat = scatter_add(v_msg_flat, row, dim=0, dim_size=num_nodes)
-        v_update = v_update_flat.reshape(num_nodes, -1, 3)  # [N, hidden, 3]
+        v_update = v_update_flat.reshape(num_nodes, -1, 3) # [N, hidden, 3]
         
         # Vectorized update
         v_norm = torch.norm(v, dim=-1)
@@ -989,7 +965,6 @@ class PaiNNLayer(nn.Module):
         
         return s_new, v_new
 
-
 # ========== Vector Neuron Components (Optimized) ==========
 
 class VectorNeuronMLP(nn.Module):
@@ -997,13 +972,12 @@ class VectorNeuronMLP(nn.Module):
     def __init__(self, in_channels: int, hidden_channels: int):
         super().__init__()
         self.linear = nn.Linear(in_channels, hidden_channels)
-
+        
     def forward(self, x: torch.Tensor, pos: torch.Tensor) -> torch.Tensor:
         x = self.linear(x)
         pos_norm = F.normalize(pos, p=2, dim=-1)
         v = x.unsqueeze(-1) * pos_norm.unsqueeze(1)
         return v
-
 
 class VectorNeuronLayer(nn.Module):
     """SO(3)-equivariant layer with vector neurons"""
@@ -1011,7 +985,7 @@ class VectorNeuronLayer(nn.Module):
         super().__init__()
         self.linear = nn.Linear(in_channels, out_channels, bias=False)
         self.kappa = nn.Parameter(torch.ones(1))
-
+        
     def forward(self, v: torch.Tensor, pos: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
         row, col = edge_index
         
@@ -1023,8 +997,7 @@ class VectorNeuronLayer(nn.Module):
         # Vectorized aggregation
         num_nodes = v.shape[0]
         v_out = torch.zeros(num_nodes, v_message.shape[1], 3, device=v.device, dtype=v.dtype)
-        # v_out.index_add_(0, row, v_message)
-        v_out.index_add_(0, row, v_message.to(v_out.dtype))
+        v_out.index_add_(0, row, v_message.to(v_out.dtype)) # <--- Added Cast
         
         v_out = self._vn_relu(v_out)
         return v + v_out
@@ -1035,17 +1008,15 @@ class VectorNeuronLayer(nn.Module):
         dir_vec = v / (norm + 1e-8)
         return activated_norm * dir_vec
 
-
 class VectorNeuronInvariant(nn.Module):
     """Extract rotation-invariant features"""
     def __init__(self, in_channels: int):
         super().__init__()
         self.linear = nn.Linear(in_channels, in_channels)
-
+        
     def forward(self, v: torch.Tensor) -> torch.Tensor:
         norm = torch.norm(v, dim=-1)
         return self.linear(norm)
-
 
 # ========== SE(3)-Transformer Components (Optimized) ==========
 
@@ -1056,8 +1027,8 @@ class SE3TransformerLayer(nn.Module):
         self.fiber_in = fiber_in
         self.fiber_out = fiber_out
         self.num_heads = num_heads
-        
         hidden_dim = fiber_in[0]
+        
         self.attention = nn.MultiheadAttention(hidden_dim, num_heads, batch_first=True)
         self.norm = nn.LayerNorm(hidden_dim)
         self.ffn = nn.Sequential(
@@ -1071,10 +1042,10 @@ class SE3TransformerLayer(nn.Module):
         x = features[0]
         x_attended, _ = self.attention(x.unsqueeze(0), x.unsqueeze(0), x.unsqueeze(0))
         x_attended = x_attended.squeeze(0)
+        
         x = self.norm(x + x_attended)
         x = x + self.ffn(x)
         return {0: x}
-
 
 # ========== NequIP Components (Optimized) ==========
 
@@ -1082,23 +1053,20 @@ class NequIPLayer(nn.Module):
     """E(3)-equivariant layer with tensor products"""
     def __init__(self, hidden_channels: int, max_ell: int):
         super().__init__()
-        
         self.message_mlp = nn.Sequential(
             nn.Linear(hidden_channels, hidden_channels),
             nn.SiLU(),
             nn.Linear(hidden_channels, hidden_channels)
         )
-        
         self.update_mlp = nn.Sequential(
             nn.Linear(hidden_channels * 2, hidden_channels),
             nn.SiLU(),
             nn.Linear(hidden_channels, hidden_channels)
         )
 
-    def forward(self, x: torch.Tensor, pos: torch.Tensor, edge_index: torch.Tensor,
+    def forward(self, x: torch.Tensor, pos: torch.Tensor, edge_index: torch.Tensor, 
                 spherical_harmonics) -> torch.Tensor:
         row, col = edge_index
-        
         rel_pos = pos[row] - pos[col]
         dist = torch.norm(rel_pos, dim=-1, keepdim=True) + 1e-8
         
@@ -1107,11 +1075,10 @@ class NequIPLayer(nn.Module):
         # Vectorized aggregation
         num_nodes = x.shape[0]
         x_out = torch.zeros_like(x)
-        x_out.index_add_(0, row, messages.to(x_out.dtype))
+        x_out.index_add_(0, row, messages.to(x_out.dtype)) # <--- Added Cast
         
         x_out = self.update_mlp(torch.cat([x, x_out], dim=-1))
         return x + x_out
-
 
 class SphericalHarmonicBasis(nn.Module):
     """Simplified spherical harmonic basis"""
@@ -1122,14 +1089,11 @@ class SphericalHarmonicBasis(nn.Module):
     def forward(self, dir_vec: torch.Tensor) -> torch.Tensor:
         x, y, z = dir_vec[:, 0], dir_vec[:, 1], dir_vec[:, 2]
         sh = [torch.ones_like(x)]
-        
         if self.max_ell >= 1:
             sh.extend([x, y, z])
         if self.max_ell >= 2:
             sh.extend([x*y, x*z, y*z, x**2 - y**2, 3*z**2 - 1])
-        
         return torch.stack(sh, dim=-1)
-
 
 # ========== ClofNet Components (Optimized) ==========
 
@@ -1137,29 +1101,25 @@ class ClofLayer(nn.Module):
     """SE(3)-equivariant layer with local frames"""
     def __init__(self, hidden_channels: int):
         super().__init__()
-        
         self.scalarize_mlp = nn.Sequential(
             nn.Linear(3, hidden_channels),
             nn.ReLU(),
             nn.Linear(hidden_channels, hidden_channels)
         )
-        
         self.message_mlp = nn.Sequential(
             nn.Linear(hidden_channels * 2, hidden_channels),
             nn.ReLU(),
             nn.Linear(hidden_channels, hidden_channels)
         )
-        
         self.update_mlp = nn.Sequential(
             nn.Linear(hidden_channels * 2, hidden_channels),
             nn.ReLU(),
             nn.Linear(hidden_channels, hidden_channels)
         )
 
-    def forward(self, x: torch.Tensor, pos: torch.Tensor, edge_index: torch.Tensor,
+    def forward(self, x: torch.Tensor, pos: torch.Tensor, edge_index: torch.Tensor, 
                 frames: torch.Tensor) -> torch.Tensor:
         row, col = edge_index
-        
         rel_pos = pos[row] - pos[col]
         local_coords = torch.bmm(frames[row], rel_pos.unsqueeze(-1)).squeeze(-1)
         
@@ -1169,11 +1129,10 @@ class ClofLayer(nn.Module):
         # Vectorized aggregation
         num_nodes = x.shape[0]
         x_out = torch.zeros_like(x)
-        x_out.index_add_(0, row, messages.to(x_out.dtype))
+        x_out.index_add_(0, row, messages.to(x_out.dtype)) # <--- Added Cast
         
         x_out = self.update_mlp(torch.cat([x, x_out], dim=-1))
         return x + x_out
-    
 
 class GraphormerLayer(nn.Module):
     """
@@ -1187,9 +1146,9 @@ class GraphormerLayer(nn.Module):
         
         # Attention mechanism
         self.attention = nn.MultiheadAttention(
-            embed_dim=hidden_channels, 
-            num_heads=num_heads, 
-            dropout=dropout, 
+            embed_dim=hidden_channels,
+            num_heads=num_heads,
+            dropout=dropout,
             batch_first=True
         )
         
@@ -1200,7 +1159,7 @@ class GraphormerLayer(nn.Module):
         # Spatial Encoding (b_phi) - Bias added to attention scores
         self.spatial_encoding = nn.Embedding(max_path_distance, num_heads)
         self.inf_encoding = nn.Parameter(torch.zeros(num_heads)) # For unreachable nodes
-        
+
         # Feed Forward
         self.norm1 = nn.LayerNorm(hidden_channels)
         self.norm2 = nn.LayerNorm(hidden_channels)
@@ -1211,10 +1170,12 @@ class GraphormerLayer(nn.Module):
             nn.Linear(hidden_channels * 4, hidden_channels),
             nn.Dropout(dropout)
         )
+        
         self.max_path_distance = max_path_distance
 
     def forward(self, x, edge_index, batch, shortest_path_dists=None):
         # x: [num_nodes, hidden_channels]
+        
         # Note: Graphormer requires dense batching for efficient attention
         
         # 1. Centrality Encoding
@@ -1222,7 +1183,7 @@ class GraphormerLayer(nn.Module):
         deg = degree(edge_index[0], x.size(0), dtype=torch.long)
         x = x + self.z_deg_in(deg.clamp(max=self.z_deg_in.num_embeddings - 1))
         x = x + self.z_deg_out(deg.clamp(max=self.z_deg_out.num_embeddings - 1))
-        
+
         # 2. Dense Conversion
         # x_dense: [batch_size, max_nodes, hidden_channels]
         # mask: [batch_size, max_nodes] (True for real nodes, False for padding)
@@ -1232,6 +1193,7 @@ class GraphormerLayer(nn.Module):
         # We need shortest path distances between all pairs in the dense batch
         # Calculating this on the fly is expensive; usually precomputed in dataset
         # Here we implement a basic placeholder or assume it's passed
+        
         attn_bias = torch.zeros(x_dense.size(0), self.num_heads, x_dense.size(1), x_dense.size(1), device=x.device)
         
         if shortest_path_dists is not None:
@@ -1246,7 +1208,7 @@ class GraphormerLayer(nn.Module):
             spatial_bias[unreachable_mask.unsqueeze(1).expand_as(spatial_bias)] = self.inf_encoding.view(1, -1, 1, 1)
             
             attn_bias = attn_bias + spatial_bias
-
+            
         # Add padding mask to attention bias (set padding positions to -inf)
         # mask is True for real nodes. attn_mask expects True for values to IGNORE (in some PyTorch versions)
         # PyTorch MultiheadAttention key_padding_mask: True for elements to ignore
@@ -1255,80 +1217,18 @@ class GraphormerLayer(nn.Module):
         # x_dense is [Batch, Seq, Dim]
         x_residual = x_dense
         
-        # Note: PyTorch's MultiheadAttention doesn't easily accept a [Batch, Heads, N, N] bias tensor 
-        # directly in the `attn_mask` argument without newer versions (2.0+ SDP attention).
-        # We will use a simplified standard attention here.
+        # Note: PyTorch's MultiheadAttention doesn't easily take a [Batch, Heads, N, N] bias without using custom attn_mask
+        # We simplify here to just standard attention for the prototype
+        x_dense, _ = self.attention(x_dense, x_dense, x_dense, key_padding_mask=~mask)
         
-        x_dense, _ = self.attention(
-            x_dense, x_dense, x_dense, 
-            key_padding_mask=~mask # Invert mask: True for padding
-        )
+        x_dense = self.norm1(x_dense + x_residual)
         
-        x_dense = self.norm1(x_residual + x_dense)
+        # 5. Feed Forward
+        x_residual = x_dense
+        x_dense = self.ffn(x_dense)
+        x_dense = self.norm2(x_dense + x_residual)
         
-        # 5. FFN
-        x_dense = self.norm2(x_dense + self.ffn(x_dense))
+        # 6. Convert back to sparse (masked select)
+        x = x_dense[mask]
         
-        # 6. Convert back to sparse (recover original node order)
-        x_out = x_dense[mask]
-        
-        return x_out
-
-class EquiformerBlock(nn.Module):
-    """
-    Equivariant Graph Attention Transformer (Equiformer).
-    Uses e3nn for SO(3)/E(3) tensor products.
-    """
-    def __init__(self, irr_in, irr_out, max_ell=2, num_heads=4):
-        super().__init__()
-        if not HAS_E3NN:
-            raise ImportError("Equiformer requires e3nn. Install with `pip install e3nn`")
-            
-        self.irr_in = o3.Irreps(irr_in)
-        self.irr_out = o3.Irreps(irr_out)
-        self.num_heads = num_heads
-        
-        # Linear layers for Q, K, V (Tensor Products)
-        # We map inputs to hidden irreps
-        self.irr_hidden = o3.Irreps(f"{32}x0e + {16}x1o + {8}x2e") # Example hidden representation
-        
-        self.lin_q = o3.Linear(self.irr_in, self.irr_hidden)
-        self.lin_k = o3.Linear(self.irr_in, self.irr_hidden)
-        self.lin_v = o3.Linear(self.irr_in, self.irr_hidden)
-        
-        # Tensor Product for Attention (Query * Key)
-        self.tp_k_q = o3.FullyConnectedTensorProduct(
-            self.irr_hidden, self.irr_hidden, self.irr_hidden
-        )
-        
-        # Output projection
-        self.lin_out = o3.Linear(self.irr_hidden, self.irr_out)
-        
-        # Non-linearity (Gate)
-        self.act = o3.Gate(
-            self.irr_hidden, [torch.relu], 
-            self.irr_hidden, [torch.sigmoid], 
-            self.irr_hidden, [torch.tanh]
-        ) # Note: Configuring Gates correctly requires precise matching of scalars/vectors
-
-    def forward(self, x, pos, edge_index):
-        # x: features [num_nodes, dim] (Needs to be converted to Irreps format if raw)
-        # pos: coordinates [num_nodes, 3]
-        
-        row, col = edge_index
-        edge_vec = pos[row] - pos[col]
-        
-        # 1. Linear Projections
-        q = self.lin_q(x)
-        k = self.lin_k(x)
-        v = self.lin_v(x)
-        
-        # 2. Attention Mechanism (Simplified Dot Product)
-        # In real Equiformer, this involves Spherical Harmonics of edge_vec
-        # mixed with DotProduct attention.
-        
-        # For this prototype, we will return linear projection to satisfy the pipeline API
-        # A full Equiformer requires ~300 lines of tensor product setup.
-        out = self.lin_out(q) 
-        return out
-
+        return x

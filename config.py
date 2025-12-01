@@ -98,6 +98,11 @@ class SchedulerConfig:
     lr_gamma: float = 0.5
     lr_warmup_epochs: int = 5
 
+    plateau_patience: int = 5  # For 'plateau' lr_schedule
+    plateau_factor: float = 0.5  # For 'plateau' lr_schedule
+
+    exponential_decay_rate: float = 0.95  # For 'exponential' lr_schedule
+
 
 @dataclass
 class TrainingConfig:

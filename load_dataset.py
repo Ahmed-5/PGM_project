@@ -112,6 +112,7 @@ class AtomDegreeOneHot:
         Before: Loop over each node to compute degree
         After: torch.bincount for vectorized computation
         """
+        if data.edge_index is None: return data # Skip if no edges
         # Vectorized degree computation (single GPU operation)
         degrees = torch.bincount(
             data.edge_index[0],
@@ -165,8 +166,6 @@ class AtomicNumberToOneHot:
         if hasattr(data, 'z') and data.z is not None:
             # Create one-hot encoding
             z = data.z.long()
-            # Map atomic numbers to indices (simplified: just use z as index)
-            # In production, you might want a tighter mapping if max_z is large but sparse
             x = F.one_hot(z, num_classes=self.max_atomic_number).float()
             data.x = x
         return data
@@ -235,47 +234,31 @@ class QM9Loader:
         """
         dataset = QM9(root=config.data.root)
         
-        # Get target index (default: 7, HOMO-LUMO gap)
         target_idx = getattr(config.data, 'qm9_target', 7)
         
-        # 1. Filter NaNs safely
         if hasattr(dataset, '_data') and hasattr(dataset, 'slices'):
             all_y = dataset._data.y
-            if all_y.dim() > 1:
-                targets = all_y[:, target_idx]
-            else:
-                targets = all_y 
+            targets = all_y[:, target_idx] if all_y.dim() > 1 else all_y
         else:
             targets = torch.tensor([d.y.view(-1)[target_idx].item() for d in dataset])
 
-        # Filter invalid samples
         valid_mask = ~torch.isnan(targets)
         valid_indices = torch.where(valid_mask)[0]
         
-        # Create subset for calculation
         valid_targets = targets[valid_indices]
-        
         mean = valid_targets.mean()
         std = valid_targets.std()
         
-        # 2. Create new data list with normalized targets
         new_data_list = []
-        
-        # Use indices to access original data efficiently
         for idx in valid_indices:
             data = dataset[idx.item()]
-            # Extract specific target
             raw_val = data.y.view(-1)[target_idx]
             norm_val = (raw_val - mean) / std
-            
-            # Set y to [1, 1] shape for regression
             data.y = norm_val.view(1, 1)
             new_data_list.append(data)
             
-        # 3. Wrap in top-level class (Pickleable!)
         dataset = ProcessedQM9(new_data_list)
         
-        # Vectorized split
         train_size = int(0.8 * len(dataset))
         val_size = int(0.1 * len(dataset))
         test_size = len(dataset) - train_size - val_size
@@ -318,27 +301,24 @@ class MD17Loader:
         """
         molecule = getattr(config.data, 'md17_molecule', 'aspirin')
         
-        # 1. Define Transforms
-        # MD17 only gives positions (z, pos). We need:
-        # - One-hot features from z
-        # - Edges based on cutoff distance (Radius Graph)
-        
         max_z = 20
-        cutoff = getattr(config.model, 'cutoff', 10.0)  # Get cutoff from model config or default
+        cutoff = getattr(config.model, 'cutoff', 10.0)
         
+        # --- FIX: Use `transform` instead of `pre_transform` ---
+        # This ensures transforms are applied even when loading from cache.
         transforms = Compose([
             AtomicNumberToOneHot(max_atomic_number=max_z),
-            RadiusGraph(r=cutoff)  # <--- CRITICAL: Create edges!
+            RadiusGraph(r=cutoff)
         ])
         
         dataset = MD17(
             root=config.data.root,
             name=molecule,
-            pre_transform=transforms
+            transform=transforms,  # Apply on-the-fly
+            # force_reload=True     # Uncomment if you suspect stale cache issues
         )
+        # -------------------------------------------------------------
 
-        # 2. Post-process: Normalize targets
-        # MD17 has .energy and .force. We use .energy for 'y' in this simplified loader.
         all_energies = torch.tensor([d.energy.item() for d in dataset])
         mean = all_energies.mean()
         std = all_energies.std()
@@ -347,12 +327,11 @@ class MD17Loader:
         for data in dataset:
             e_norm = (data.energy - mean) / std
             data.y = e_norm.view(1, 1)
+            # data.x should have been created by the transform
             new_data_list.append(data)
             
-        # Wrap in InMemoryDataset
         dataset = ProcessedQM9(new_data_list)
 
-        # 3. Split
         train_frac = getattr(config.data, 'train_split', 0.8)
         val_frac = getattr(config.data, 'val_split', 0.1)
         
@@ -383,33 +362,26 @@ class ModelNetLoader:
                 train=True,
                 transform=transform
             )
-
             test_dataset = ModelNet(
                 root=config.data.root,
                 name='40',
                 train=False,
                 transform=transform
             )
-
-            # Efficient train/val split
             train_size = int(0.9 * len(train_dataset))
             val_size = len(train_dataset) - train_size
-
             train_dataset, val_dataset = torch.utils.data.random_split(
                 train_dataset, [train_size, val_size],
                 generator=torch.Generator().manual_seed(config.seed)
             )
-
             return train_dataset, val_dataset, test_dataset
 
         except Exception as e:
             if "No connection" in str(e) or "refused" in str(e):
                 raise ConnectionError(
-                    f"ModelNet40 download failed due to network issue.\n"
-                    f"Manual download: https://modelnet.cs.princeton.edu/ModelNet40.zip"
+                    f"ModelNet40 download failed. Manual: https://modelnet.cs.princeton.edu/ModelNet40.zip"
                 )
             raise e
-
 
 # ========== DICTIONARY-BASED DISPATCH (O(1) Lookup) ==========
 
@@ -421,42 +393,27 @@ DATASET_LOADERS: Dict[str, Callable] = {
     'ModelNet40': ModelNetLoader.load,
 }
 
-
 # ========== MAIN LOADING FUNCTION (Optimized) ==========
 
 @lru_cache(maxsize=4)
 def get_dataset_info(dataset_name: str) -> Dict[str, Any]:
-    """
-    OPTIMIZED: Get dataset metadata (cached)
-
-    Memoized to avoid repeated dictionary lookups
-    """
     return DATASET_REGISTRY.get(
         dataset_name,
         {'size': 'Unknown', 'symmetries': ['permutation']}
     )
 
-
 def load_dataset(config) -> Tuple:
-    """
-    OPTIMIZED: Load dataset with efficient dispatch
-
-    Uses dictionary-based routing (O(1) instead of O(N) if-elif chains)
-    """
     dataset_name = config.data.dataset_name
     print(f"Loading dataset: {dataset_name}")
 
-    # Dictionary dispatch (O(1) lookup)
     if dataset_name not in DATASET_LOADERS:
         raise ValueError(
-            f"Unknown dataset: {dataset_name}. "
-            f"Supported datasets: {list(DATASET_LOADERS.keys())}"
+            f"Unknown dataset: {dataset_name}. Supported: {list(DATASET_LOADERS.keys())}"
         )
 
     loader = DATASET_LOADERS[dataset_name]
     train_dataset, val_dataset, test_dataset = loader(config)
 
-    # Validate and report dataset info
     _validate_and_report_dataset(
         train_dataset, val_dataset, test_dataset,
         dataset_name, config
@@ -469,59 +426,42 @@ def _validate_and_report_dataset(
     train_dataset, val_dataset, test_dataset,
     dataset_name: str, config
 ) -> None:
-    """
-    OPTIMIZED: Validate dataset and report statistics
-
-    Vectorized validation without Python loops
-    """
-    # Get sample
     sample_data = train_dataset[0] if hasattr(train_dataset, '__getitem__') else next(iter(train_dataset))
-
-    # Check for 3D coordinates
     has_pos = hasattr(sample_data, 'pos') and sample_data.pos is not None
 
-    # Warn if config mismatch
     if config.data.use_positions and not has_pos:
         warnings.warn(
-            f"Config specifies use_positions=True but {dataset_name} has no 3D coordinates. "
-            f"Setting use_positions=False."
+            f"Config specifies use_positions=True but {dataset_name} has no 3D coords. Setting to False."
         )
         config.data.use_positions = False
 
-    # Validate symmetry groups
     required_symmetries = DATASET_SYMMETRIES.get(dataset_name, ['permutation'])
     requested_symmetries = config.equivariance.symmetry_groups
     geometric_groups = {'so3', 'o3', 'se3', 'e3', 'translation', 'reflection', 'scaling'}
 
     if any(g in requested_symmetries for g in geometric_groups) and not has_pos:
         warnings.warn(
-            f"Geometric symmetry groups {requested_symmetries} require 3D coordinates, "
-            f"but {dataset_name} has none."
+            f"Geometric symmetry groups requested but {dataset_name} has no 3D coordinates."
         )
 
-    # Print dataset info
     print(f" Train: {len(train_dataset)}")
     print(f" Val: {len(val_dataset)}")
     print(f" Test: {len(test_dataset)}")
     print(f" Has 3D coordinates: {has_pos}")
     print(f" Recommended symmetries: {required_symmetries}")
 
-    # Print sample statistics (vectorized)
     if hasattr(sample_data, 'x') and sample_data.x is not None:
         print(f" Node features: {sample_data.x.shape}")
     if has_pos:
         print(f" Coordinates: {sample_data.pos.shape}")
     
-    # --- FIX HERE ---
     if hasattr(sample_data, 'edge_index') and sample_data.edge_index is not None:
         print(f" Edges: {sample_data.edge_index.shape}")
     else:
         print(" Edges: None (Point Cloud)")
-    # ----------------
         
-    if hasattr(sample_data, 'y'):
+    if hasattr(sample_data, 'y') and sample_data.y is not None:
         print(f" Target: {sample_data.y.shape}")
-
 
 def get_dataset_loader(dataset_name: str) -> Optional[Callable]:
     """

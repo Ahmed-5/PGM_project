@@ -523,6 +523,14 @@ def train(config: ExperimentConfig) -> tuple:
         lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer, T_max=config.training.num_epochs
         )
+    elif config.scheduler.lr_schedule == 'plateau':
+        lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, patience=config.scheduler.plateau_patience, factor=config.scheduler.plateau_factor
+        )
+    elif config.scheduler.lr_schedule == 'exponential':
+        lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(
+            optimizer, gamma=config.scheduler.exponential_decay_rate
+        )
     else:
         lr_scheduler = None
 
