@@ -251,6 +251,9 @@ def train_epoch(model, loader, optimizer, device, task_loss_fn, eq_losses,
         if do_equivariance:
              for k, v in eq_loss_dict.items():
                  step_metrics[k] = v.item() if isinstance(v, torch.Tensor) else v
+                 # log layer losses only if computed
+                 if layer_weights is not None:
+                     step_metrics[f'layer_weight/{k}_loss'] = layer_weights[int(k.split('_')[-1])].item()
         
         # Log layer weights
         if layer_weights is not None:
