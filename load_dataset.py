@@ -15,7 +15,7 @@ import os
 import torch
 import torch.nn.functional as F
 from torch_geometric.datasets import ZINC, QM9, ModelNet, QM7b, MD17
-from torch_geometric.transforms import Compose, NormalizeScale
+from torch_geometric.transforms import Compose, NormalizeScale, RadiusGraph
 import numpy as np
 from typing import Tuple, Optional, Dict, Any, Callable
 import warnings
@@ -309,61 +309,50 @@ class QM7bLoader:
 
 
 class MD17Loader:
-    """OPTIMIZED: Efficient MD17 loading"""
+    """OPTIMIZED: Efficient MD17 loading with Radius Graph"""
 
     @staticmethod
     def load(config) -> Tuple:
         """
         Load MD17 dataset for a specific molecule.
-        MD17 contains molecular dynamics trajectories (Energy/Forces).
-        
-        Args:
-            config: ExperimentConfig with 'md17_molecule' (e.g., 'aspirin', 'benzene', 'ethanol')
         """
         molecule = getattr(config.data, 'md17_molecule', 'aspirin')
         
-        # Transform to convert atomic numbers (z) to feature vectors (x)
-        # We assume a reasonable max atomic number (e.g. 20 covers H, C, N, O, F) or use config
-        max_z = 20 
-        pre_transform = AtomicNumberToOneHot(max_atomic_number=max_z)
+        # 1. Define Transforms
+        # MD17 only gives positions (z, pos). We need:
+        # - One-hot features from z
+        # - Edges based on cutoff distance (Radius Graph)
+        
+        max_z = 20
+        cutoff = getattr(config.model, 'cutoff', 10.0)  # Get cutoff from model config or default
+        
+        transforms = Compose([
+            AtomicNumberToOneHot(max_atomic_number=max_z),
+            RadiusGraph(r=cutoff)  # <--- CRITICAL: Create edges!
+        ])
         
         dataset = MD17(
             root=config.data.root,
             name=molecule,
-            pre_transform=pre_transform
+            pre_transform=transforms
         )
 
-        # MD17 data usually has:
-        # data.z (Atomic numbers) -> Converted to data.x by pre_transform
-        # data.pos (Positions)
-        # data.energy (Target 1)
-        # data.force (Target 2)
-        
-        # We need to standardize data.y for the training loop
-        # By default, we'll use Energy as the primary regression target.
-        # If forces are needed, the training loop/loss function needs to be aware of data.force
-        
-        # Post-processing to set data.y and normalize
-        # Since MD17 is one large trajectory, we process it into a list
-        
-        # 1. Calculate stats for Energy normalization
+        # 2. Post-process: Normalize targets
+        # MD17 has .energy and .force. We use .energy for 'y' in this simplified loader.
         all_energies = torch.tensor([d.energy.item() for d in dataset])
         mean = all_energies.mean()
         std = all_energies.std()
         
         new_data_list = []
         for data in dataset:
-            # Normalize Energy
             e_norm = (data.energy - mean) / std
-            data.y = e_norm.view(1, 1) # [1, 1] for regression
+            data.y = e_norm.view(1, 1)
             new_data_list.append(data)
             
-        # Wrap in InMemoryDataset for efficiency
+        # Wrap in InMemoryDataset
         dataset = ProcessedQM9(new_data_list)
 
-        # Split: MD17 is often split chronologically or randomly. 
-        # Standard benchmark often uses random splits or specific sizes (e.g. 1K train).
-        # We stick to ratio splits from config for consistency.
+        # 3. Split
         train_frac = getattr(config.data, 'train_split', 0.8)
         val_frac = getattr(config.data, 'val_split', 0.1)
         
@@ -522,8 +511,14 @@ def _validate_and_report_dataset(
         print(f" Node features: {sample_data.x.shape}")
     if has_pos:
         print(f" Coordinates: {sample_data.pos.shape}")
-    if hasattr(sample_data, 'edge_index'):
+    
+    # --- FIX HERE ---
+    if hasattr(sample_data, 'edge_index') and sample_data.edge_index is not None:
         print(f" Edges: {sample_data.edge_index.shape}")
+    else:
+        print(" Edges: None (Point Cloud)")
+    # ----------------
+        
     if hasattr(sample_data, 'y'):
         print(f" Target: {sample_data.y.shape}")
 
