@@ -566,7 +566,10 @@ def train(config: ExperimentConfig) -> tuple:
 
         # Update learning rate
         if lr_scheduler is not None:
-            lr_scheduler.step()
+            if config.scheduler.lr_schedule == 'plateau':
+                lr_scheduler.step(val_metrics['val/loss'])
+            else:
+                lr_scheduler.step()
 
         # Combine metrics for logging
         epoch_metrics = {**train_metrics, **val_metrics}
