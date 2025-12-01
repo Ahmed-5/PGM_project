@@ -755,6 +755,8 @@ class BaseGNN(nn.Module):
             'se3_transformer': {'permutation': True, 'rotation': 'SE(3) Equivariant', 'translation': 'Equivariant', 'level': 'SE(3) equivariant'},
             'nequip': {'permutation': True, 'rotation': 'Equivariant', 'translation': 'Equivariant', 'level': 'E(3) equivariant'},
             'clofnet': {'permutation': True, 'rotation': 'SE(3) Equivariant', 'translation': 'Equivariant', 'level': 'SE(3) equivariant'},
+            'graphormer': {'permutation': True, 'rotation': 'Equivariant', 'translation': 'Equivariant', 'level': 'E(3) equivariant'},
+            'equiformer': {'permutation': True, 'rotation': 'Equivariant', 'translation': 'Equivariant', 'level': 'E(3) equivariant'},
         }
         
         return symmetry_map.get(self.model_type, {})
@@ -815,7 +817,7 @@ class SchNetInteraction(nn.Module):
         # Vectorized aggregation with scatter_add
         num_nodes = x.shape[0]
         x_out = torch.zeros_like(x)
-        x_out.index_add_(0, row, messages)
+        x_out.index_add_(0, row, messages.to(x_out.dtype))
         
         x_out = self.interaction_mlp(x_out)
         return x + x_out
@@ -859,7 +861,7 @@ class DimeNetInteraction(nn.Module):
         # Vectorized aggregation
         num_nodes = x.shape[0]
         x_out = torch.zeros_like(x)
-        x_out.index_add_(0, row, messages)
+        x_out.index_add_(0, row, messages.to(x_out.dtype))
         
         x_out = self.update_mlp(torch.cat([x, x_out], dim=-1))
         return x + x_out
@@ -916,7 +918,8 @@ class EGNNLayer(nn.Module):
         # Vectorized message aggregation
         num_nodes = h.shape[0]
         messages = torch.zeros(num_nodes, edge_emb.shape[1], device=h.device, dtype=h.dtype)
-        messages.index_add_(0, row, edge_emb)
+        # messages.index_add_(0, row, edge_emb)
+        messages.index_add_(0, row, edge_emb.to(messages.dtype))
         
         h_new = self.node_mlp(torch.cat([h, messages], dim=-1))
         
@@ -924,7 +927,8 @@ class EGNNLayer(nn.Module):
         if self.update_coords:
             coord_weights = self.coord_mlp(edge_emb)
             coord_update = torch.zeros_like(x)
-            coord_update.index_add_(0, row, rel_pos * coord_weights)
+            # coord_update.index_add_(0, row, rel_pos * coord_weights)
+            coord_update.index_add_(0, row, (rel_pos * coord_weights).to(coord_update.dtype))
             x_new = x + coord_update
         
         return h_new, x_new
@@ -1019,7 +1023,8 @@ class VectorNeuronLayer(nn.Module):
         # Vectorized aggregation
         num_nodes = v.shape[0]
         v_out = torch.zeros(num_nodes, v_message.shape[1], 3, device=v.device, dtype=v.dtype)
-        v_out.index_add_(0, row, v_message)
+        # v_out.index_add_(0, row, v_message)
+        v_out.index_add_(0, row, v_message.to(v_out.dtype))
         
         v_out = self._vn_relu(v_out)
         return v + v_out
@@ -1102,7 +1107,7 @@ class NequIPLayer(nn.Module):
         # Vectorized aggregation
         num_nodes = x.shape[0]
         x_out = torch.zeros_like(x)
-        x_out.index_add_(0, row, messages)
+        x_out.index_add_(0, row, messages.to(x_out.dtype))
         
         x_out = self.update_mlp(torch.cat([x, x_out], dim=-1))
         return x + x_out
@@ -1164,7 +1169,7 @@ class ClofLayer(nn.Module):
         # Vectorized aggregation
         num_nodes = x.shape[0]
         x_out = torch.zeros_like(x)
-        x_out.index_add_(0, row, messages)
+        x_out.index_add_(0, row, messages.to(x_out.dtype))
         
         x_out = self.update_mlp(torch.cat([x, x_out], dim=-1))
         return x + x_out

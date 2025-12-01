@@ -147,6 +147,10 @@ class DataConfig:
     val_split: float = 0.1
     test_split: float = 0.1
 
+    rewiring: str = 'none' # 'none', 'spectral', 'geometric'
+    rewiring_k: int = 2    # hops or neighbors
+    rewiring_threshold: float = 5.0 # distance threshold
+
 
 @dataclass
 class LoggingConfig:

@@ -13,14 +13,15 @@ Key Optimizations:
 
 import os
 import torch
-from torch_geometric.datasets import ZINC, QM9, ModelNet, QM7b
+import torch.nn.functional as F
+from torch_geometric.datasets import ZINC, QM9, ModelNet, QM7b, MD17
 from torch_geometric.transforms import Compose, NormalizeScale
 import numpy as np
 from typing import Tuple, Optional, Dict, Any, Callable
 import warnings
 from functools import lru_cache
 import math
-from torch_geometric.data import InMemoryDataset
+from torch_geometric.data import InMemoryDataset, Data
 from rewiring import GraphRewiring
 
 
@@ -56,7 +57,7 @@ DATASET_REGISTRY = {
     },
     'MD17': {
         'size': '150K-1M per molecule',
-        'task': 'Force prediction',
+        'task': 'Regression (Energy/Force)',
         'properties': 'Energy, forces',
         'dimensions': '3D',
         'symmetries': ['permutation', 'e3'],
@@ -152,6 +153,25 @@ class NormalizeTargets:
         return target * self.std + self.mean
 
 
+class AtomicNumberToOneHot:
+    """
+    Transform to convert atomic numbers (z) to one-hot features (x).
+    Useful for MD17 where 'x' is not provided by default.
+    """
+    def __init__(self, max_atomic_number: int = 100):
+        self.max_atomic_number = max_atomic_number
+
+    def __call__(self, data):
+        if hasattr(data, 'z') and data.z is not None:
+            # Create one-hot encoding
+            z = data.z.long()
+            # Map atomic numbers to indices (simplified: just use z as index)
+            # In production, you might want a tighter mapping if max_z is large but sparse
+            x = F.one_hot(z, num_classes=self.max_atomic_number).float()
+            data.x = x
+        return data
+
+
 # ========== EFFICIENT DATASET LOADERS (Vectorized) ==========
 
 class ZincLoader:
@@ -160,7 +180,16 @@ class ZincLoader:
     @staticmethod
     def load(config) -> Tuple:
         """Load ZINC with efficient transform"""
-        transform = AtomDegreeOneHot(num_atom_types=28, max_degree=10)
+        # 1. Basic Transform
+        base_transform = AtomDegreeOneHot(num_atom_types=28, max_degree=10)
+        
+        # 2. Rewiring Transform (Conditional)
+        rewiring_strategy = getattr(config.data, 'rewiring', 'none') 
+        if rewiring_strategy != 'none':
+            rewirer = GraphRewiring(strategy=rewiring_strategy, k=2)
+            transform = Compose([base_transform, rewirer])
+        else:
+            transform = base_transform
 
         # Load splits
         train_dataset = ZINC(
@@ -186,6 +215,7 @@ class ZincLoader:
 
         return train_dataset, val_dataset, test_dataset
 
+
 class ProcessedQM9(InMemoryDataset):
     """
     Wrapper class to make the modified QM9 dataset pickleable.
@@ -195,7 +225,6 @@ class ProcessedQM9(InMemoryDataset):
         super().__init__(None, None, None)
         self.data, self.slices = self.collate(data_list)
 
-# [Then replace the QM9Loader class with this version]
 
 class QM9Loader:
     """OPTIMIZED: Efficient QM9 loading with vectorized filtering"""
@@ -224,14 +253,12 @@ class QM9Loader:
         valid_indices = torch.where(valid_mask)[0]
         
         # Create subset for calculation
-        # Note: We must not modify the original dataset yet
         valid_targets = targets[valid_indices]
         
         mean = valid_targets.mean()
         std = valid_targets.std()
         
         # 2. Create new data list with normalized targets
-        # We filter AND normalize in one pass to avoid indexing issues
         new_data_list = []
         
         # Use indices to access original data efficiently
@@ -278,6 +305,77 @@ class QM7bLoader:
             generator=torch.Generator().manual_seed(config.seed)
         )
 
+        return train_dataset, val_dataset, test_dataset
+
+
+class MD17Loader:
+    """OPTIMIZED: Efficient MD17 loading"""
+
+    @staticmethod
+    def load(config) -> Tuple:
+        """
+        Load MD17 dataset for a specific molecule.
+        MD17 contains molecular dynamics trajectories (Energy/Forces).
+        
+        Args:
+            config: ExperimentConfig with 'md17_molecule' (e.g., 'aspirin', 'benzene', 'ethanol')
+        """
+        molecule = getattr(config.data, 'md17_molecule', 'aspirin')
+        
+        # Transform to convert atomic numbers (z) to feature vectors (x)
+        # We assume a reasonable max atomic number (e.g. 20 covers H, C, N, O, F) or use config
+        max_z = 20 
+        pre_transform = AtomicNumberToOneHot(max_atomic_number=max_z)
+        
+        dataset = MD17(
+            root=config.data.root,
+            name=molecule,
+            pre_transform=pre_transform
+        )
+
+        # MD17 data usually has:
+        # data.z (Atomic numbers) -> Converted to data.x by pre_transform
+        # data.pos (Positions)
+        # data.energy (Target 1)
+        # data.force (Target 2)
+        
+        # We need to standardize data.y for the training loop
+        # By default, we'll use Energy as the primary regression target.
+        # If forces are needed, the training loop/loss function needs to be aware of data.force
+        
+        # Post-processing to set data.y and normalize
+        # Since MD17 is one large trajectory, we process it into a list
+        
+        # 1. Calculate stats for Energy normalization
+        all_energies = torch.tensor([d.energy.item() for d in dataset])
+        mean = all_energies.mean()
+        std = all_energies.std()
+        
+        new_data_list = []
+        for data in dataset:
+            # Normalize Energy
+            e_norm = (data.energy - mean) / std
+            data.y = e_norm.view(1, 1) # [1, 1] for regression
+            new_data_list.append(data)
+            
+        # Wrap in InMemoryDataset for efficiency
+        dataset = ProcessedQM9(new_data_list)
+
+        # Split: MD17 is often split chronologically or randomly. 
+        # Standard benchmark often uses random splits or specific sizes (e.g. 1K train).
+        # We stick to ratio splits from config for consistency.
+        train_frac = getattr(config.data, 'train_split', 0.8)
+        val_frac = getattr(config.data, 'val_split', 0.1)
+        
+        train_size = int(train_frac * len(dataset))
+        val_size = int(val_frac * len(dataset))
+        test_size = len(dataset) - train_size - val_size
+        
+        train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(
+            dataset, [train_size, val_size, test_size],
+            generator=torch.Generator().manual_seed(config.seed)
+        )
+        
         return train_dataset, val_dataset, test_dataset
 
 
@@ -330,6 +428,7 @@ DATASET_LOADERS: Dict[str, Callable] = {
     'ZINC': ZincLoader.load,
     'QM9': QM9Loader.load,
     'QM7b': QM7bLoader.load,
+    'MD17': MD17Loader.load,
     'ModelNet40': ModelNetLoader.load,
 }
 
