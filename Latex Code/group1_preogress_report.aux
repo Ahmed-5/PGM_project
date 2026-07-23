@@ -1,0 +1,128 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\citation{bronstein2021geometric}
+\citation{elhag2024remul,vanderouderaa2023layerwise,hofgard2024relaxed}
+\@writefile{toc}{\contentsline {section}{\numberline {1}Executive Summary}{3}{section.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.1}Key Accomplishments}{3}{subsection.1.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.2}Current Status}{3}{subsection.1.2}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Experiment Completion Status}}{3}{table.caption.2}\protected@file@percent }
+\providecommand*\caption@xref[2]{\@setref\relax\@undefined{#1}}
+\newlabel{tab:status}{{1}{3}{Experiment Completion Status}{table.caption.2}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {2}Introduction}{3}{section.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.1}Problem Statement}{3}{subsection.2.1}\protected@file@percent }
+\citation{bronstein2021geometric}
+\citation{kipf2017gcn}
+\citation{xu2019gin}
+\citation{hamilton2017graphsage}
+\citation{schutt2018schnet}
+\citation{schutt2021painn}
+\citation{satorras2021egnn}
+\citation{liao2023equiformer}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.2}Research Questions}{4}{subsection.2.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.3}Contributions}{4}{subsection.2.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {3}Related Work}{4}{section.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}Geometric Deep Learning and Equivariance}{4}{subsection.3.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}Strict vs. Relaxed Equivariance}{4}{subsection.3.2}\protected@file@percent }
+\citation{elhag2024remul}
+\citation{vanderouderaa2023layerwise}
+\citation{hofgard2024relaxed}
+\citation{wang2022approximate}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.3}Relaxed Equivariance Frameworks}{5}{subsection.3.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {4}Methodology}{5}{section.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Problem Formulation}{5}{subsection.4.1}\protected@file@percent }
+\newlabel{eq:total_loss}{{3}{5}{Problem Formulation}{equation.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}Equivariance Loss Computation}{5}{subsection.4.2}\protected@file@percent }
+\citation{kipf2017gcn}
+\citation{xu2019gin}
+\citation{hamilton2017graphsage}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}Scheduling Strategies}{6}{subsection.4.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}Model Architectures}{6}{subsection.4.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.5}Implementation Details}{6}{subsection.4.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {5}Experimental Setup}{7}{section.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}Dataset: ZINC12k}{7}{subsection.5.1}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces ZINC12k Dataset Statistics}}{7}{table.caption.3}\protected@file@percent }
+\newlabel{tab:zinc_stats}{{2}{7}{ZINC12k Dataset Statistics}{table.caption.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}Training Configuration}{7}{subsection.5.2}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Training Hyperparameters}}{7}{table.caption.4}\protected@file@percent }
+\newlabel{tab:hyperparams}{{3}{7}{Training Hyperparameters}{table.caption.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}Experiment Phases}{7}{subsection.5.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {6}Results}{8}{section.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.1}Phase 1: GCN Scheduling Comparison}{8}{subsection.6.1}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces Phase 1: GCN Results by Scheduling Strategy (ZINC12k, 5 seeds)}}{8}{table.caption.5}\protected@file@percent }
+\newlabel{tab:phase1}{{4}{8}{Phase 1: GCN Results by Scheduling Strategy (ZINC12k, 5 seeds)}{table.caption.5}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Phase 1: GCN scheduling strategy comparison showing (left) Test $R^2$ and (right) Test MAE across 5 random seeds. Learnable scheduling achieves the best mean performance with lowest variance.}}{9}{figure.caption.6}\protected@file@percent }
+\newlabel{fig:phase1}{{1}{9}{Phase 1: GCN scheduling strategy comparison showing (left) Test $R^2$ and (right) Test MAE across 5 random seeds. Learnable scheduling achieves the best mean performance with lowest variance}{figure.caption.6}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Distribution of Test $R^2$ across seeds for each scheduling strategy. Learnable scheduling shows the tightest distribution, indicating more consistent performance.}}{9}{figure.caption.7}\protected@file@percent }
+\newlabel{fig:variance}{{2}{9}{Distribution of Test $R^2$ across seeds for each scheduling strategy. Learnable scheduling shows the tightest distribution, indicating more consistent performance}{figure.caption.7}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.2}Phase 2: Architecture Comparison}{9}{subsection.6.2}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {5}{\ignorespaces Phase 2: Architecture Comparison (Best Schedule per Model)}}{9}{table.caption.8}\protected@file@percent }
+\newlabel{tab:phase2_summary}{{5}{9}{Phase 2: Architecture Comparison (Best Schedule per Model)}{table.caption.8}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {6}{\ignorespaces Phase 2: Detailed Model $\times $ Schedule Breakdown}}{10}{table.caption.9}\protected@file@percent }
+\newlabel{tab:phase2_detail}{{6}{10}{Phase 2: Detailed Model $\times $ Schedule Breakdown}{table.caption.9}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Architecture $\times $ Scheduling comparison. GIN baseline (leftmost green bar) dramatically outperforms all other configurations. Equivariance regularization helps GCN but hurts GIN.}}{10}{figure.caption.10}\protected@file@percent }
+\newlabel{fig:architecture}{{3}{10}{Architecture $\times $ Scheduling comparison. GIN baseline (leftmost green bar) dramatically outperforms all other configurations. Equivariance regularization helps GCN but hurts GIN}{figure.caption.10}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces GIN performance degradation with equivariance regularization. The baseline (no regularization) achieves $R^2 = 0.838$, while learnable scheduling drops to $R^2 = 0.686$---an 18\% degradation.}}{11}{figure.caption.11}\protected@file@percent }
+\newlabel{fig:gin_impact}{{4}{11}{GIN performance degradation with equivariance regularization. The baseline (no regularization) achieves $R^2 = 0.838$, while learnable scheduling drops to $R^2 = 0.686$---an 18\% degradation}{figure.caption.11}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.3}Ablation Study: $\alpha _0$ and $\beta $ Sensitivity}{11}{subsection.6.3}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {7}{\ignorespaces Ablation Study: $R^2$ by $\alpha _0 \times \beta $ Grid (GCN, 3 seeds each)}}{11}{table.caption.12}\protected@file@percent }
+\newlabel{tab:ablation}{{7}{11}{Ablation Study: $R^2$ by $\alpha _0 \times \beta $ Grid (GCN, 3 seeds each)}{table.caption.12}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5}{\ignorespaces Ablation study heatmaps for (left) $R^2$ and (right) MAE across the $\alpha _0 \times \beta $ parameter grid. Performance is relatively stable across the tested range.}}{11}{figure.caption.13}\protected@file@percent }
+\newlabel{fig:ablation}{{5}{11}{Ablation study heatmaps for (left) $R^2$ and (right) MAE across the $\alpha _0 \times \beta $ parameter grid. Performance is relatively stable across the tested range}{figure.caption.13}{}}
+\citation{keriven2022oversmoothing}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.4}Depth Study}{12}{subsection.6.4}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {8}{\ignorespaces Depth Study: Performance by Network Depth (GCN)}}{12}{table.caption.14}\protected@file@percent }
+\newlabel{tab:depth}{{8}{12}{Depth Study: Performance by Network Depth (GCN)}{table.caption.14}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {6}{\ignorespaces Effect of network depth on performance. Shallow networks (4 layers) slightly outperform deeper ones, consistent with oversmoothing in GCN architectures.}}{12}{figure.caption.15}\protected@file@percent }
+\newlabel{fig:depth}{{6}{12}{Effect of network depth on performance. Shallow networks (4 layers) slightly outperform deeper ones, consistent with oversmoothing in GCN architectures}{figure.caption.15}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.5}Summary of Best Results}{13}{subsection.6.5}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {7}{\ignorespaces Top 5 model-schedule configurations ranked by Test $R^2$. GIN baseline dominates, achieving $R^2 = 0.838$.}}{13}{figure.caption.16}\protected@file@percent }
+\newlabel{fig:best}{{7}{13}{Top 5 model-schedule configurations ranked by Test $R^2$. GIN baseline dominates, achieving $R^2 = 0.838$}{figure.caption.16}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {9}{\ignorespaces Top 5 Configurations Overall}}{13}{table.caption.17}\protected@file@percent }
+\newlabel{tab:best}{{9}{13}{Top 5 Configurations Overall}{table.caption.17}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {7}Discussion}{13}{section.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.1}Key Insights}{13}{subsection.7.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {7.1.1}Insight 1: Architecture Selection Dominates}{13}{subsubsection.7.1.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {7.1.2}Insight 2: Equivariance Benefits are Architecture-Dependent}{13}{subsubsection.7.1.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {7.1.3}Insight 3: Learnable Scheduling is Most Robust for GCN}{14}{subsubsection.7.1.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {7.1.4}Insight 4: Computational Trade-offs}{14}{subsubsection.7.1.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.2}Limitations}{14}{subsection.7.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.3}Practical Recommendations}{14}{subsection.7.3}\protected@file@percent }
+\citation{ying2021graphormer}
+\citation{liao2023equiformer}
+\citation{vanderouderaa2023layerwise}
+\@writefile{toc}{\contentsline {section}{\numberline {8}Ongoing and Future Work}{15}{section.8}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.1}Immediate Next Steps (Weeks 8-9)}{15}{subsection.8.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.2}Extended Goals (Weeks 10-12)}{15}{subsection.8.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.3}Timeline}{15}{subsection.8.3}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {10}{\ignorespaces Revised Project Timeline}}{15}{table.caption.18}\protected@file@percent }
+\newlabel{tab:timeline}{{10}{15}{Revised Project Timeline}{table.caption.18}{}}
+\bibstyle{plainnat}
+\bibcite{bronstein2021geometric}{{1}{2021}{{Bronstein et al.}}{{}}}
+\bibcite{elhag2024remul}{{2}{2024}{{Elhag et al.}}{{}}}
+\bibcite{vanderouderaa2023layerwise}{{3}{2023}{{van~der Ouderaa et al.}}{{}}}
+\bibcite{hofgard2024relaxed}{{4}{2024}{{Hofgard et al.}}{{}}}
+\bibcite{wang2022approximate}{{5}{2022}{{Wang et al.}}{{}}}
+\bibcite{kipf2017gcn}{{6}{2017}{{Kipf and Welling}}{{}}}
+\bibcite{xu2019gin}{{7}{2019}{{Xu et al.}}{{}}}
+\bibcite{hamilton2017graphsage}{{8}{2017}{{Hamilton et al.}}{{}}}
+\bibcite{satorras2021egnn}{{9}{2021}{{Satorras et al.}}{{}}}
+\bibcite{liao2023equiformer}{{10}{2023}{{Liao and Smidt}}{{}}}
+\bibcite{schutt2018schnet}{{11}{2018}{{Schütt et al.}}{{}}}
+\bibcite{schutt2021painn}{{12}{2021}{{Schütt et al.}}{{}}}
+\@writefile{toc}{\contentsline {section}{\numberline {9}Conclusion}{16}{section.9}\protected@file@percent }
+\bibcite{keriven2022oversmoothing}{{13}{2022}{{Keriven}}{{}}}
+\bibcite{gilmer2017mpnn}{{14}{2017}{{Gilmer et al.}}{{}}}
+\bibcite{dwivedi2023benchmarking}{{15}{2023}{{Dwivedi et al.}}{{}}}
+\bibcite{ying2021graphormer}{{16}{2021}{{Ying et al.}}{{}}}
+\@writefile{toc}{\contentsline {section}{\numberline {A}Appendix: Experimental Details}{17}{appendix.A}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.1}Complete Experiment Counts}{17}{subsection.A.1}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {11}{\ignorespaces Detailed Experiment Breakdown}}{17}{table.caption.20}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.2}Hyperparameter Settings}{18}{subsection.A.2}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {12}{\ignorespaces Complete Hyperparameter Configuration}}{18}{table.caption.21}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.3}Code Availability}{18}{subsection.A.3}\protected@file@percent }
+\newlabel{LastPage}{{A.3}{18}{Code Availability}{page.18}{}}
+\gdef\lastpage@lastpage{18}
+\gdef\lastpage@lastpageHy{18}
+\gdef \@abspage@last{19}

@@ -1,0 +1,44 @@
+\contentsline {section}{\numberline {1}Executive Summary}{3}{section.1}%
+\contentsline {subsection}{\numberline {1.1}Key Accomplishments}{3}{subsection.1.1}%
+\contentsline {subsection}{\numberline {1.2}Current Status}{3}{subsection.1.2}%
+\contentsline {section}{\numberline {2}Introduction}{3}{section.2}%
+\contentsline {subsection}{\numberline {2.1}Problem Statement}{3}{subsection.2.1}%
+\contentsline {subsection}{\numberline {2.2}Research Questions}{4}{subsection.2.2}%
+\contentsline {subsection}{\numberline {2.3}Contributions}{4}{subsection.2.3}%
+\contentsline {section}{\numberline {3}Related Work}{4}{section.3}%
+\contentsline {subsection}{\numberline {3.1}Geometric Deep Learning and Equivariance}{4}{subsection.3.1}%
+\contentsline {subsection}{\numberline {3.2}Strict vs. Relaxed Equivariance}{4}{subsection.3.2}%
+\contentsline {subsection}{\numberline {3.3}Relaxed Equivariance Frameworks}{5}{subsection.3.3}%
+\contentsline {section}{\numberline {4}Methodology}{5}{section.4}%
+\contentsline {subsection}{\numberline {4.1}Problem Formulation}{5}{subsection.4.1}%
+\contentsline {subsection}{\numberline {4.2}Equivariance Loss Computation}{5}{subsection.4.2}%
+\contentsline {subsection}{\numberline {4.3}Scheduling Strategies}{6}{subsection.4.3}%
+\contentsline {subsection}{\numberline {4.4}Model Architectures}{6}{subsection.4.4}%
+\contentsline {subsection}{\numberline {4.5}Implementation Details}{6}{subsection.4.5}%
+\contentsline {section}{\numberline {5}Experimental Setup}{7}{section.5}%
+\contentsline {subsection}{\numberline {5.1}Dataset: ZINC12k}{7}{subsection.5.1}%
+\contentsline {subsection}{\numberline {5.2}Training Configuration}{7}{subsection.5.2}%
+\contentsline {subsection}{\numberline {5.3}Experiment Phases}{7}{subsection.5.3}%
+\contentsline {section}{\numberline {6}Results}{8}{section.6}%
+\contentsline {subsection}{\numberline {6.1}Phase 1: GCN Scheduling Comparison}{8}{subsection.6.1}%
+\contentsline {subsection}{\numberline {6.2}Phase 2: Architecture Comparison}{9}{subsection.6.2}%
+\contentsline {subsection}{\numberline {6.3}Ablation Study: $\alpha _0$ and $\beta $ Sensitivity}{11}{subsection.6.3}%
+\contentsline {subsection}{\numberline {6.4}Depth Study}{12}{subsection.6.4}%
+\contentsline {subsection}{\numberline {6.5}Summary of Best Results}{13}{subsection.6.5}%
+\contentsline {section}{\numberline {7}Discussion}{13}{section.7}%
+\contentsline {subsection}{\numberline {7.1}Key Insights}{13}{subsection.7.1}%
+\contentsline {subsubsection}{\numberline {7.1.1}Insight 1: Architecture Selection Dominates}{13}{subsubsection.7.1.1}%
+\contentsline {subsubsection}{\numberline {7.1.2}Insight 2: Equivariance Benefits are Architecture-Dependent}{13}{subsubsection.7.1.2}%
+\contentsline {subsubsection}{\numberline {7.1.3}Insight 3: Learnable Scheduling is Most Robust for GCN}{14}{subsubsection.7.1.3}%
+\contentsline {subsubsection}{\numberline {7.1.4}Insight 4: Computational Trade-offs}{14}{subsubsection.7.1.4}%
+\contentsline {subsection}{\numberline {7.2}Limitations}{14}{subsection.7.2}%
+\contentsline {subsection}{\numberline {7.3}Practical Recommendations}{14}{subsection.7.3}%
+\contentsline {section}{\numberline {8}Ongoing and Future Work}{15}{section.8}%
+\contentsline {subsection}{\numberline {8.1}Immediate Next Steps (Weeks 8-9)}{15}{subsection.8.1}%
+\contentsline {subsection}{\numberline {8.2}Extended Goals (Weeks 10-12)}{15}{subsection.8.2}%
+\contentsline {subsection}{\numberline {8.3}Timeline}{15}{subsection.8.3}%
+\contentsline {section}{\numberline {9}Conclusion}{16}{section.9}%
+\contentsline {section}{\numberline {A}Appendix: Experimental Details}{17}{appendix.A}%
+\contentsline {subsection}{\numberline {A.1}Complete Experiment Counts}{17}{subsection.A.1}%
+\contentsline {subsection}{\numberline {A.2}Hyperparameter Settings}{18}{subsection.A.2}%
+\contentsline {subsection}{\numberline {A.3}Code Availability}{18}{subsection.A.3}%
