@@ -298,14 +298,20 @@ class EquivarianceLoss(nn.Module):
         if self.group_type in ['so3', 'o3', 'e3', 'se3', 'reflection']:
             if features.shape[-1] == self.spatial_dim:
                 R_expanded = R[batch_idx]
+                # Broadcast the rotation over any leading feature dims so both
+                # [N, D] and e.g. [N, H, D] (PaiNN/vector-neuron vectors) work.
+                while R_expanded.dim() < features.dim() + 1:
+                    R_expanded = R_expanded.unsqueeze(-3)
                 transformed_features = torch.matmul(
                     R_expanded, transformed_features.unsqueeze(-1)).squeeze(-1)
 
         if self.group_type == 'scaling':
             if features.shape[-1] == self.spatial_dim:
-                s_expanded = s[batch_idx].unsqueeze(-1)
+                s_expanded = s[batch_idx]
+                while s_expanded.dim() < features.dim():
+                    s_expanded = s_expanded.unsqueeze(-1)
                 transformed_features = transformed_features * s_expanded
-        
+
         return transformed_features
 
     # ========== CORE EQUIVARIANCE TESTING (Fully Optimized v3) ==========
@@ -388,8 +394,8 @@ class EquivarianceLoss(nn.Module):
 
         # Helper to compute loss for a pair of tensors
         def compute_layer_loss(out_x, out_g_x, name="final"):
-            # Expand out_x to match out_g_x
-            out_x_expanded = out_x.repeat(self.num_samples, 1)
+            # Expand out_x to match out_g_x (works for [N, F] and [N, H, D])
+            out_x_expanded = out_x.repeat(self.num_samples, *([1] * (out_x.dim() - 1)))
             
             # Apply g to f(x) -> g·f(x)
             g_f_x = self.transform_features_geometric(
@@ -448,14 +454,22 @@ class EquivarianceLoss(nn.Module):
         dtype = positions.dtype
         unique_graphs = torch.unique(batch)
         
-        # Initialize accumulators
+        # Initialize accumulators. We track element counts (not just node
+        # counts) so the final reduction is a true element-wise mean, matching
+        # the geometric path's ``torch.mean(error_sq)`` — this keeps loss
+        # magnitudes comparable across group families (permutation vs geometric)
+        # even when ``normalize=False``.
         total_loss = torch.tensor(0.0, device=device, dtype=dtype)
         total_feat_norm_sq = torch.tensor(0.0, device=device, dtype=dtype)
+        total_loss_elems = 0
+        total_norm_elems = 0
         total_nodes_tested = 0
-        
+
         # Per-layer accumulators
         total_layer_losses = {}
         total_layer_norms = {}
+        total_layer_loss_elems = {}
+        total_layer_norm_elems = {}
 
         for graph_id in unique_graphs:
             # --- 1. Extract single graph data ---
@@ -529,35 +543,44 @@ class EquivarianceLoss(nn.Module):
 
             # Helper to accumulate loss
             def accumulate_loss(out_x, out_g_x, name="final"):
-                # Expand f(x)
-                out_x_expanded = out_x.repeat(self.num_samples, 1)
+                # Expand f(x) (works for [N, F] and [N, H, D])
+                out_x_expanded = out_x.repeat(self.num_samples, *([1] * (out_x.dim() - 1)))
+
+                # Permutation acts on the node index, not on the feature
+                # space: for node-level outputs, equivariance means
+                # f(g·x)[i] = f(x)[p[i]] regardless of feature_type (which
+                # only governs geometric feature transformations).
+                g_f_x = out_x_expanded[perm_indices_flat]
                 
-                # g·f(x)
-                if self.feature_type == 'invariant':
-                    g_f_x = out_x_expanded
-                else:
-                    g_f_x = out_x_expanded[perm_indices_flat]
-                
-                # Loss
+                # Loss (element-wise squared error, summed here and divided by
+                # the element count at the end -> element-wise mean).
                 loss_sq = (out_g_x - g_f_x) ** 2
                 loss_sum = torch.sum(loss_sq)
-                
+                n_loss = loss_sq.numel()
+                norm_sum = torch.sum(out_x ** 2)
+                n_norm = out_x.numel()
+
                 # Update accumulators
                 if name == "final":
                     nonlocal total_loss, total_feat_norm_sq
+                    nonlocal total_loss_elems, total_norm_elems
                     total_loss = total_loss + loss_sum
+                    total_loss_elems += n_loss
                     if self.normalize:
-                        total_feat_norm_sq = total_feat_norm_sq + \
-                            torch.sum(out_x ** 2) * self.num_samples
+                        total_feat_norm_sq = total_feat_norm_sq + norm_sum
+                        total_norm_elems += n_norm
                 else:
                     if name not in total_layer_losses:
                         total_layer_losses[name] = torch.tensor(0.0, device=device, dtype=dtype)
                         total_layer_norms[name] = torch.tensor(0.0, device=device, dtype=dtype)
-                    
+                        total_layer_loss_elems[name] = 0
+                        total_layer_norm_elems[name] = 0
+
                     total_layer_losses[name] = total_layer_losses[name] + loss_sum
+                    total_layer_loss_elems[name] += n_loss
                     if self.normalize:
-                        total_layer_norms[name] = total_layer_norms[name] + \
-                            torch.sum(out_x ** 2) * self.num_samples
+                        total_layer_norms[name] = total_layer_norms[name] + norm_sum
+                        total_layer_norm_elems[name] += n_norm
 
             # --- 7. Accumulate Main Loss ---
             accumulate_loss(f_x_graph, f_g_x, "final")
@@ -569,22 +592,22 @@ class EquivarianceLoss(nn.Module):
                     layer_idx = l_x['layer_idx']
                     accumulate_loss(l_x['representation'], l_g_x['representation'], f"layer_{layer_idx}")
 
-        # --- 9. Final averaging ---
+        # --- 9. Final averaging (element-wise mean, matching geometric path) ---
         loss_dict = {}
-        if total_nodes_tested == 0:
+        if total_nodes_tested == 0 or total_loss_elems == 0:
             return torch.tensor(0.0, device=device, dtype=dtype), loss_dict
-        
-        # Main Loss
-        avg_loss = total_loss / total_nodes_tested
+
+        # Main Loss: mean(error_sq) / mean(out_x**2), each a true element mean.
+        avg_loss = total_loss / total_loss_elems
         if self.normalize:
-            avg_norm = total_feat_norm_sq / total_nodes_tested
+            avg_norm = total_feat_norm_sq / max(total_norm_elems, 1)
             avg_loss = avg_loss / (avg_norm + self.epsilon)
-            
+
         # Per-Layer Losses
         for name, val in total_layer_losses.items():
-            l_loss = val / total_nodes_tested
+            l_loss = val / max(total_layer_loss_elems[name], 1)
             if self.normalize:
-                l_norm = total_layer_norms[name] / total_nodes_tested
+                l_norm = total_layer_norms[name] / max(total_layer_norm_elems[name], 1)
                 l_loss = l_loss / (l_norm + self.epsilon)
             loss_dict[name] = l_loss
 

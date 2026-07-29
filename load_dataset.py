@@ -101,9 +101,13 @@ class AtomDegreeOneHot:
     Vectorized degree binning and encoding (no Python loops)
     """
 
-    def __init__(self, num_atom_types: int = 28, max_degree: int = 10):
+    def __init__(self, num_atom_types: int = 28, max_degree: int = 10,
+                 feature_type: str = 'combined'):
         self.num_atom_types = num_atom_types
         self.max_degree = max_degree
+        # 'combined' -> atom features + degree one-hot
+        # 'atomic'   -> atom features only (degree slots zeroed, dim unchanged)
+        self.feature_type = feature_type
 
     def __call__(self, data):
         """
@@ -113,20 +117,23 @@ class AtomDegreeOneHot:
         After: torch.bincount for vectorized computation
         """
         if data.edge_index is None: return data # Skip if no edges
-        # Vectorized degree computation (single GPU operation)
-        degrees = torch.bincount(
-            data.edge_index[0],
-            minlength=data.x.shape[0]
-        ).clamp(max=self.max_degree)
 
-        # Vectorized one-hot encoding
+        # Vectorized one-hot encoding (kept even for 'atomic' so the feature
+        # dimension is identical across ablation runs).
         degree_onehot = torch.zeros(
             data.x.shape[0],
             self.max_degree + 1,
             dtype=torch.float32,
             device=data.x.device
         )
-        degree_onehot.scatter_(1, degrees.unsqueeze(1), 1.0)
+
+        if self.feature_type != 'atomic':
+            # Vectorized degree computation (single GPU operation)
+            degrees = torch.bincount(
+                data.edge_index[0],
+                minlength=data.x.shape[0]
+            ).clamp(max=self.max_degree)
+            degree_onehot.scatter_(1, degrees.unsqueeze(1), 1.0)
 
         # Efficient concatenation
         data.x = torch.cat([data.x, degree_onehot], dim=1)
@@ -180,7 +187,9 @@ class ZincLoader:
     def load(config) -> Tuple:
         """Load ZINC with efficient transform"""
         # 1. Basic Transform
-        base_transform = AtomDegreeOneHot(num_atom_types=28, max_degree=10)
+        feature_type = getattr(config.data, 'feature_type', 'combined')
+        base_transform = AtomDegreeOneHot(num_atom_types=28, max_degree=10,
+                                          feature_type=feature_type)
         
         # 2. Rewiring Transform (Conditional)
         rewiring_strategy = getattr(config.data, 'rewiring', 'none') 
@@ -244,31 +253,36 @@ class QM9Loader:
 
         valid_mask = ~torch.isnan(targets)
         valid_indices = torch.where(valid_mask)[0]
-        
+
+        # Split FIRST (same seeded partition as torch.utils.data.random_split,
+        # which is randperm + sequential slicing) so normalization statistics
+        # come from the train split only — no val/test target leakage.
+        n = len(valid_indices)
+        train_size = int(0.8 * n)
+        val_size = int(0.1 * n)
+
+        perm = torch.randperm(n, generator=torch.Generator().manual_seed(config.seed))
+        split_idx = {
+            'train': perm[:train_size],
+            'val': perm[train_size:train_size + val_size],
+            'test': perm[train_size + val_size:],
+        }
+
         valid_targets = targets[valid_indices]
-        mean = valid_targets.mean()
-        std = valid_targets.std()
-        
-        new_data_list = []
-        for idx in valid_indices:
-            data = dataset[idx.item()]
-            raw_val = data.y.view(-1)[target_idx]
-            norm_val = (raw_val - mean) / std
-            data.y = norm_val.view(1, 1)
-            new_data_list.append(data)
-            
-        dataset = ProcessedQM9(new_data_list)
-        
-        train_size = int(0.8 * len(dataset))
-        val_size = int(0.1 * len(dataset))
-        test_size = len(dataset) - train_size - val_size
-        
-        train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(
-            dataset, [train_size, val_size, test_size],
-            generator=torch.Generator().manual_seed(config.seed)
-        )
-        
-        return train_dataset, val_dataset, test_dataset
+        mean = valid_targets[split_idx['train']].mean()
+        std = valid_targets[split_idx['train']].std()
+
+        def make_subset(idxs):
+            data_list = []
+            for i in idxs.tolist():
+                data = dataset[valid_indices[i].item()]
+                raw_val = data.y.view(-1)[target_idx]
+                data.y = ((raw_val - mean) / std).view(1, 1)
+                data_list.append(data)
+            return ProcessedQM9(data_list)
+
+        return (make_subset(split_idx['train']), make_subset(split_idx['val']),
+                make_subset(split_idx['test']))
 
 
 class QM7bLoader:
@@ -320,31 +334,37 @@ class MD17Loader:
         # -------------------------------------------------------------
 
         all_energies = torch.tensor([d.energy.item() for d in dataset])
-        mean = all_energies.mean()
-        std = all_energies.std()
-        
-        new_data_list = []
-        for data in dataset:
-            e_norm = (data.energy - mean) / std
-            data.y = e_norm.view(1, 1)
-            # data.x should have been created by the transform
-            new_data_list.append(data)
-            
-        dataset = ProcessedQM9(new_data_list)
 
         train_frac = getattr(config.data, 'train_split', 0.8)
         val_frac = getattr(config.data, 'val_split', 0.1)
-        
-        train_size = int(train_frac * len(dataset))
-        val_size = int(val_frac * len(dataset))
-        test_size = len(dataset) - train_size - val_size
-        
-        train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(
-            dataset, [train_size, val_size, test_size],
-            generator=torch.Generator().manual_seed(config.seed)
-        )
-        
-        return train_dataset, val_dataset, test_dataset
+
+        # Split FIRST (same seeded partition as random_split) so normalization
+        # statistics come from the train split only — no val/test leakage.
+        n = len(dataset)
+        train_size = int(train_frac * n)
+        val_size = int(val_frac * n)
+
+        perm = torch.randperm(n, generator=torch.Generator().manual_seed(config.seed))
+        split_idx = {
+            'train': perm[:train_size],
+            'val': perm[train_size:train_size + val_size],
+            'test': perm[train_size + val_size:],
+        }
+
+        mean = all_energies[split_idx['train']].mean()
+        std = all_energies[split_idx['train']].std()
+
+        def make_subset(idxs):
+            data_list = []
+            for i in idxs.tolist():
+                data = dataset[i]
+                data.y = ((data.energy - mean) / std).view(1, 1)
+                # data.x should have been created by the transform
+                data_list.append(data)
+            return ProcessedQM9(data_list)
+
+        return (make_subset(split_idx['train']), make_subset(split_idx['val']),
+                make_subset(split_idx['test']))
 
 
 class ModelNetLoader:

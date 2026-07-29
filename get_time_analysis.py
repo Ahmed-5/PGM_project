@@ -173,8 +173,11 @@ def compute_equivariance_losses(model: nn.Module, batch, eq_losses: dict,
         total_eq_loss = 0.0
         eq_loss_dict = {}
 
-        def network_fn(pos, feat, edges, b):
-            return model(feat, pos, edges, b, return_node_embeddings=True)
+        # network_fn must accept return_layer_outputs (EquivarianceLoss passes
+        # it) and return the (output, layer_outputs) tuple the v3 API expects.
+        def network_fn(pos, feat, edges, b, return_layer_outputs=True):
+            return model(feat, pos, edges, b,
+                         return_layer_outputs=True, return_node_embeddings=True)
 
         if config.data.use_positions and hasattr(batch, 'pos'):
             positions = batch.pos
@@ -184,17 +187,18 @@ def compute_equivariance_losses(model: nn.Module, batch, eq_losses: dict,
         for group_type, eq_loss_fn in eq_losses.items():
             with TimerContext(profiler, f"eq_loss_{group_type}"):
                 weight = config.equivariance.group_weights.get(group_type, 0.1)
-                eq_loss = eq_loss_fn(
-                    network_fn=network_fn,
-                    positions=positions,
-                    features=batch.x,
-                    edge_index=batch.edge_index,
-                    batch=batch.batch
+                # v3 API returns (main_loss, per_layer_loss_dict).
+                main_loss, _ = eq_loss_fn(
+                    network_fn,
+                    positions,
+                    batch.x,
+                    batch.edge_index,
+                    batch.batch
                 )
-                weighted_loss = weight * eq_loss
-                total_eq_loss = total_eq_loss + weighted_loss if isinstance(total_eq_loss, (int, float)) else total_eq_loss + weighted_loss
+                weighted_loss = weight * main_loss
+                total_eq_loss = total_eq_loss + weighted_loss
 
-                eq_loss_dict[f'eq_loss/{group_type}'] = eq_loss
+                eq_loss_dict[f'eq_loss/{group_type}'] = main_loss
                 eq_loss_dict[f'eq_loss_weighted/{group_type}'] = weighted_loss
 
     return total_eq_loss, eq_loss_dict

@@ -52,11 +52,72 @@ def initialize_equivariance_losses(config: ExperimentConfig) -> dict:
     return eq_losses
 
 
-def compute_equivariance_losses(model: nn.Module, batch, eq_losses: dict, 
-                              config, device: str, 
-                              layer_weights: torch.Tensor = None) -> tuple:  # <--- Added Arg
+def _layer_index_from_key(key: str):
+    """Parse the integer layer index from a per-layer loss key.
+
+    "layer_3" -> 3 ; "layer_3_vec" -> 3 (vector-feature term for the same
+    layer) ; anything else -> None.
+    """
+    if not key.startswith('layer_'):
+        return None
+    head = key[len('layer_'):].split('_', 1)[0]
+    try:
+        return int(head)
+    except ValueError:
+        return None
+
+
+def _resolve_group_weights(config) -> dict:
+    """Resolve per-group equivariance weights for the active symmetry groups.
+
+    Fixes two issues (bug C):
+    - No silent 0.1 default: a group without an explicit weight gets an equal
+      share and a warning, so a forgotten ``group_weights`` cannot silently
+      change the effective strength.
+    - Optional normalization (``config.equivariance.normalize_group_weights``,
+      default True) rescales the weights so their sum equals
+      ``config.equivariance.total_equivariance_strength`` (default 1.0). This
+      makes the TOTAL equivariance strength identical across group-set arms
+      (e.g. {so3} vs {so3, translation, permutation}) — the fairness
+      precondition for the "do groups help?" ablation.
+    """
+    groups = list(config.equivariance.symmetry_groups)
+    if not groups:
+        return {}
+    raw = config.equivariance.group_weights or {}
+    weights, missing = {}, []
+    for g in groups:
+        if g in raw:
+            weights[g] = float(raw[g])
+        else:
+            missing.append(g)
+    if missing:
+        share = (sum(weights.values()) / len(weights)) if weights else 1.0
+        for g in missing:
+            weights[g] = share
+        warnings.warn(
+            f"group_weights missing for {missing}; assigned equal share {share:.4g}. "
+            "Set --equivariance.group_weights explicitly for reproducibility.")
+    if getattr(config.equivariance, 'normalize_group_weights', True):
+        total = sum(weights.values())
+        strength = getattr(config.equivariance, 'total_equivariance_strength', 1.0)
+        if total > 0 and strength is not None:
+            scale = strength / total
+            weights = {g: w * scale for g, w in weights.items()}
+    return weights
+
+
+def compute_equivariance_losses(model: nn.Module, batch, eq_losses: dict,
+                              config, device: str,
+                              layer_weights: torch.Tensor = None,
+                              apply_group_weights: bool = True) -> tuple:
     """
     Compute equivariance losses with pre-calculated layer weights.
+
+    ``apply_group_weights=False`` disables the per-group scalar weights (uses
+    1.0 for every group), yielding a group-weight-free aggregate suitable for
+    fair cross-config comparison of how equivariant a model actually is
+    (bug B). ``layer_weights=None`` uses all-ones layer weights.
     """
     total_eq_loss = torch.tensor(0.0, device=device)
     eq_loss_dict = {}
@@ -64,65 +125,77 @@ def compute_equivariance_losses(model: nn.Module, batch, eq_losses: dict,
     if not eq_losses:
         return total_eq_loss, eq_loss_dict
 
+    # Run equivariance passes with dropout disabled and stable BatchNorm stats so
+    # that f(g.x) and g.f(x) are compared under identical stochasticity. Gradients
+    # still flow (eval() does not disable autograd, and per-layer representations
+    # are kept attached whenever grad is enabled).
+    was_training = model.training
+    model.eval()
+    try:
+        return _compute_equivariance_losses_impl(
+            model, batch, eq_losses, config, device, layer_weights,
+            total_eq_loss, eq_loss_dict, apply_group_weights=apply_group_weights)
+    finally:
+        if was_training:
+            model.train()
+
+
+def _compute_equivariance_losses_impl(model, batch, eq_losses, config, device,
+                                      layer_weights, total_eq_loss, eq_loss_dict,
+                                      apply_group_weights=True):
     # 1. Setup Data
     if config.data.use_positions and hasattr(batch, 'pos'):
         positions = batch.pos
     else:
         positions = torch.zeros(batch.x.shape[0], 3, device=device)
 
-    # 2. Run model to get layers
-    final_x, layers_x = model(batch.x, positions, batch.edge_index, batch.batch, 
-                            return_layer_outputs=True, return_node_embeddings=True)
-    
-    num_actual_layers = len(layers_x) + 1
-    
-    # Safety check: Ensure weight vector matches actual model depth
+    # 2. Default layer weights (all-ones over the model's real layers). Each
+    #    captured per-layer output maps to exactly one weight. We index
+    #    positionally with a clamp, so a size mismatch never raises (bug F).
     if layer_weights is None:
-        layer_weights = torch.ones(num_actual_layers, device=device)
-    elif len(layer_weights) != num_actual_layers:
-        # Handle mismatch (e.g., if config.num_layers != actual output length)
-        # Truncate or pad
-        if len(layer_weights) > num_actual_layers:
-             layer_weights = layer_weights[:num_actual_layers]
-        else:
-             # This case is rarer, but just use what we have
-             pass
+        layer_weights = torch.ones(config.model.num_layers, device=device)
+
+    resolved_weights = _resolve_group_weights(config) if apply_group_weights else None
+
+    # Define wrapper to match EquivarianceLoss signature (pos, x, ...) and
+    # handle argument swapping for BaseGNN (x, pos, ...). Defined once.
+    def model_wrapper(p, f, e, b, return_layer_outputs=True):
+        return model(f, p, e, b, return_layer_outputs=True, return_node_embeddings=True)
 
     # 3. Iterate Groups
     for group_type, eq_loss_fn in eq_losses.items():
-        group_weight = config.equivariance.group_weights.get(group_type, 0.1)
-        
-        num_graphs = batch.batch.max().item() + 1
-        
-        # Define wrapper to match EquivarianceLoss signature (pos, x, ...) -> (out, layers)
-        # and handle argument swapping for BaseGNN (x, pos, ...)
-        def model_wrapper(p, f, e, b, return_layer_outputs=True):
-            # BaseGNN expects (x, pos, edge_index, batch)
-            return model(f, p, e, b, return_layer_outputs=True, return_node_embeddings=True)
+        group_weight = resolved_weights.get(group_type, 0.0) if apply_group_weights else 1.0
 
-        # Compute all losses at once (Optimized v3 API)
-        # Returns: main_loss (final layer), loss_dict (intermediate layers)
-        main_loss, group_layer_losses = eq_loss_fn(model_wrapper, positions, batch.x, batch.edge_index, batch.batch)
-        
+        # Compute all losses at once (v3 API).
+        # Returns: main_loss (final graph-level output) and a per-layer dict.
+        main_loss, group_layer_losses = eq_loss_fn(
+            model_wrapper, positions, batch.x, batch.edge_index, batch.batch)
+
         group_total_loss = torch.tensor(0.0, device=device)
-        
-        # 4. Aggregate weighted losses
-        # Intermediate layers
-        for layer_idx in range(num_actual_layers - 1):
-            key = f"layer_{layer_idx}"
-            if key in group_layer_losses:
-                l_loss = group_layer_losses[key]
-                w_l = layer_weights[layer_idx]
-                group_total_loss += l_loss * w_l
-                eq_loss_dict[f'eq_loss/{group_type}_{key}'] = l_loss.detach()
-        
-        # Final layer
-        final_layer_idx = num_actual_layers - 1
-        w_final = layer_weights[final_layer_idx]
-        group_total_loss += main_loss * w_final
-        eq_loss_dict[f'eq_loss/{group_type}_layer_{final_layer_idx}'] = main_loss.detach()
-            
-        total_eq_loss += group_weight * group_total_loss
+        n_terms = 0
+
+        # 4. Aggregate weighted per-layer losses.
+        #    Only the per-layer terms are summed — the final "main" loss is NOT
+        #    added separately, because for standard GNNs the returned final
+        #    node embedding is the SAME tensor as the last captured layer, so
+        #    adding main_loss would double-count the final layer (bug A). Keys
+        #    "layer_{i}" and "layer_{i}_vec" both map to weight[i] (A'/vector).
+        for key, l_loss in group_layer_losses.items():
+            layer_idx = _layer_index_from_key(key)
+            if layer_idx is None:
+                continue
+            w_l = layer_weights[min(layer_idx, len(layer_weights) - 1)]
+            group_total_loss = group_total_loss + l_loss * w_l
+            eq_loss_dict[f'eq_loss/{group_type}_{key}'] = l_loss.detach()
+            n_terms += 1
+
+        # Fallback for models that expose no per-layer outputs: use main_loss so
+        # the objective is still defined (e.g. raw_mlp / stub models).
+        if n_terms == 0:
+            group_total_loss = group_total_loss + main_loss * layer_weights[0]
+
+        eq_loss_dict[f'eq_loss/{group_type}_main'] = main_loss.detach()
+        total_eq_loss = total_eq_loss + group_weight * group_total_loss
         eq_loss_dict[f'eq_loss/{group_type}_total'] = group_total_loss.detach()
 
     return total_eq_loss, eq_loss_dict
@@ -206,8 +279,11 @@ def train_epoch(model, loader, optimizer, device, task_loss_fn, eq_losses,
                 scale_factor = 1.0 / config.equivariance.stochastic_probability
                 eq_loss_total = eq_loss_total * scale_factor
             
-            # Combine losses
-            alpha = config.scheduler.alpha_0
+            # Combine losses.
+            # Global equivariance strength (alpha_0) is applied once, via the
+            # per-layer DepthScheduler weights, so the outer multiplier is 1.0
+            # to avoid double-counting alpha_0.
+            alpha = 1.0
             total_loss = task_loss + (alpha * eq_loss_total)
             
             # Normalize loss for gradient accumulation
@@ -220,7 +296,10 @@ def train_epoch(model, loader, optimizer, device, task_loss_fn, eq_losses,
         scaler.scale(total_loss).backward()
         
         # 4. Optimizer Step (Accumulated)
-        if (batch_idx + 1) % config.training.accumulation_steps == 0:
+        # Also flush a trailing partial accumulation group on the last batch, so
+        # its gradients are not silently discarded when the number of batches is
+        # not a multiple of accumulation_steps (bug E).
+        if (batch_idx + 1) % config.training.accumulation_steps == 0 or (batch_idx + 1) == len(loader):
             if config.training.grad_clip > 0:
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), config.training.grad_clip)
@@ -247,14 +326,12 @@ def train_epoch(model, loader, optimizer, device, task_loss_fn, eq_losses,
             'train/step_eq_loss': log_eq,
         }
 
-        # Add per-layer equivariance losses
+        # Add per-layer equivariance losses (values are already the losses;
+        # actual per-layer weights are logged separately below).
         if do_equivariance:
              for k, v in eq_loss_dict.items():
                  step_metrics[k] = v.item() if isinstance(v, torch.Tensor) else v
-                 # log layer losses only if computed
-                 if layer_weights is not None:
-                     step_metrics[f'layer_weight/{k}_loss'] = v.item() if isinstance(v, torch.Tensor) else v
-        
+
         # Log layer weights
         if layer_weights is not None:
             weights_np = layer_weights.detach().cpu().numpy()
@@ -262,9 +339,6 @@ def train_epoch(model, loader, optimizer, device, task_loss_fn, eq_losses,
                 step_metrics[f'layer_weights/layer_{i}'] = w
                 
         logger.log_metrics(step_metrics, step=current_step)
-        
-        all_preds.append(pred.detach().float().cpu())
-        all_targets.append(target.detach().float().cpu())
 
         # Update Progress Bar
         pbar.set_postfix({
@@ -296,7 +370,7 @@ def train_epoch(model, loader, optimizer, device, task_loss_fn, eq_losses,
 @torch.inference_mode()
 def evaluate(model: BaseGNN, loader: DataLoader, device: str, task_loss_fn: nn.Module,
              eq_losses: dict, logger, epoch: int, config: ExperimentConfig,
-             split: str = 'val') -> dict:
+             split: str = 'val', depth_scheduler=None) -> dict:
     """
     OPTIMIZED: Evaluate model
 
@@ -307,6 +381,9 @@ def evaluate(model: BaseGNN, loader: DataLoader, device: str, task_loss_fn: nn.M
     """
     model.eval()
     metrics_tracker = MetricsTracker()
+    # Use the same per-layer weights as training so the selection/eval
+    # objective matches the training objective (alpha_0 flows through them).
+    layer_weights = depth_scheduler.get_all_alphas() if depth_scheduler is not None else None
     all_preds = []
     all_targets = []
     pbar = tqdm(loader, desc=f'Epoch {epoch} [{split.capitalize()}]')
@@ -323,10 +400,10 @@ def evaluate(model: BaseGNN, loader: DataLoader, device: str, task_loss_fn: nn.M
         task_loss = task_loss_fn(pred, target)
 
         # Equivariance losses (GPU-native)
-        eq_loss_total, eq_loss_dict = compute_equivariance_losses(model, batch, eq_losses, config, device)
+        eq_loss_total, eq_loss_dict = compute_equivariance_losses(model, batch, eq_losses, config, device, layer_weights=layer_weights)
 
-        # Total loss
-        total_loss = task_loss + config.scheduler.alpha_0 * eq_loss_total
+        # Total loss (eq_loss_total already scaled by alpha_0 via DepthScheduler weights)
+        total_loss = task_loss + eq_loss_total
 
         # Track losses
         split_losses['task'] += task_loss.item()
@@ -364,6 +441,29 @@ def evaluate(model: BaseGNN, loader: DataLoader, device: str, task_loss_fn: nn.M
     })
 
     return epoch_metrics
+
+
+def build_optimizer(params, config) -> torch.optim.Optimizer:
+    """Build the optimizer selected by ``config.training.optimizer``.
+
+    Previously the code hardcoded Adam and ignored the config field. Honors
+    adam/adamw/sgd/rmsprop with the configured lr, weight decay, and (for the
+    Adam family) betas/eps.
+    """
+    name = getattr(config.training, 'optimizer', 'adam').lower()
+    lr = config.training.learning_rate
+    wd = config.training.weight_decay
+    betas = tuple(getattr(config.training, 'adam_betas', (0.9, 0.999)))
+    eps = getattr(config.training, 'adam_eps', 1e-8)
+    if name == 'adam':
+        return torch.optim.Adam(params, lr=lr, weight_decay=wd, betas=betas, eps=eps)
+    if name == 'adamw':
+        return torch.optim.AdamW(params, lr=lr, weight_decay=wd, betas=betas, eps=eps)
+    if name == 'sgd':
+        return torch.optim.SGD(params, lr=lr, weight_decay=wd, momentum=0.9)
+    if name == 'rmsprop':
+        return torch.optim.RMSprop(params, lr=lr, weight_decay=wd)
+    raise ValueError(f"Unknown optimizer '{name}' (adam/adamw/sgd/rmsprop)")
 
 
 def train(config: ExperimentConfig) -> tuple:
@@ -467,6 +567,30 @@ def train(config: ExperimentConfig) -> tuple:
     eq_losses = initialize_equivariance_losses(config)
     print(f"Equivariance loss groups: {list(eq_losses.keys())}")
 
+    # Warn if a geometric equivariance loss is requested but positions can never
+    # influence the output (loss would be trivially ~0 and meaningless).
+    geometric_groups = {'so3', 'o3', 'se3', 'e3', 'translation', 'reflection', 'scaling'}
+    pos_agnostic_models = {'gcn', 'gin', 'graphsage'}
+    requested_geometric = geometric_groups.intersection(eq_losses.keys())
+    if requested_geometric:
+        if not config.data.use_positions:
+            warnings.warn(
+                f"Geometric equivariance groups {sorted(requested_geometric)} are "
+                "enabled but data.use_positions=False, so positions are zeroed and "
+                "the geometric equivariance loss is trivially ~0. Set "
+                "data.use_positions=True (and a position-aware model).",
+                UserWarning
+            )
+        elif config.model.model_type in pos_agnostic_models and not config.model.use_pos:
+            warnings.warn(
+                f"Model '{config.model.model_type}' does not consume node "
+                f"positions in its forward pass, so geometric equivariance groups "
+                f"{sorted(requested_geometric)} will be trivially ~0. Use a "
+                "position-aware model (e.g. transformer/schnet/egnn) for a "
+                "meaningful geometric equivariance signal.",
+                UserWarning
+            )
+
     # Move losses to device
     for key, loss_fn in eq_losses.items():
         eq_losses[key] = loss_fn.to(config.device)
@@ -489,9 +613,15 @@ def train(config: ExperimentConfig) -> tuple:
     # Initialize DepthScheduler
     # We determine the number of layers from config.
     # Note: We usually check (num_layers hidden) + 1 (final embedding)
-    num_check_layers = config.model.num_layers + 1
-    
-    # Map config parameters to scheduler args
+    # One DepthScheduler weight per real model layer. (Previously num_layers+1
+    # to feed a separate final-layer term, which double-counted the last layer
+    # because the final graph output equals the last captured layer under
+    # eval() — see bug A.)
+    num_check_layers = config.model.num_layers
+
+    # Map config parameters to scheduler args.
+    # Single source of truth for the layer-wise schedule is
+    # config.equivariance.layer_weight_strategy (CLI: --equivariance.layer_weight_strategy).
     scheduler_strategy = getattr(config.equivariance, 'layer_weight_strategy', 'constant')
     decay_rate = getattr(config.equivariance, 'layer_decay_rate', 0.5)
     
@@ -501,9 +631,9 @@ def train(config: ExperimentConfig) -> tuple:
     depth_scheduler = DepthScheduler(
         num_layers=num_check_layers,
         schedule_type=scheduler_strategy,
-        alpha_0=1.0,
+        alpha_0=config.scheduler.alpha_0,
         beta=beta_val,
-        gamma=0.1
+        gamma=config.scheduler.gamma
     ).to(config.device)
 
     # Optimizer (with efficient gradient computation)
@@ -513,16 +643,14 @@ def train(config: ExperimentConfig) -> tuple:
         params += list(depth_scheduler.parameters())
         print("Added DepthScheduler parameters to optimizer")
 
-    optimizer = torch.optim.Adam(
-        params,
-        lr=config.training.learning_rate,
-        weight_decay=config.training.weight_decay
-    )
+    optimizer = build_optimizer(params, config)
 
     # Learning rate scheduler
     if config.scheduler.lr_schedule == 'step':
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
-            optimizer, step_size=50, gamma=0.5
+            optimizer,
+            step_size=config.scheduler.lr_step_size,
+            gamma=config.scheduler.lr_gamma,
         )
     elif config.scheduler.lr_schedule == 'cosine':
         lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -546,7 +674,9 @@ def train(config: ExperimentConfig) -> tuple:
     task_loss_fn = nn.MSELoss()
 
     # Early stopping
-    early_stopping = EarlyStopping(patience=config.training.patience)
+    early_stopping = EarlyStopping(
+        patience=config.training.patience, min_delta=config.training.min_delta
+    )
 
     # Training loop
     print(f"\nTraining for {config.training.num_epochs} epochs...")
@@ -567,7 +697,8 @@ def train(config: ExperimentConfig) -> tuple:
         # Validate
         val_metrics = evaluate(
             model, val_loader, config.device,
-            task_loss_fn, eq_losses, logger, epoch, config, split='val'
+            task_loss_fn, eq_losses, logger, epoch, config, split='val',
+            depth_scheduler=depth_scheduler
         )
 
         # Update learning rate
@@ -613,7 +744,8 @@ def train(config: ExperimentConfig) -> tuple:
                 f'{config.experiment_name}_best.pt'
             )
             save_checkpoint(
-                model, optimizer, epoch, best_val_loss, checkpoint_path
+                model, optimizer, epoch, best_val_loss, checkpoint_path,
+                additional_state={'depth_scheduler_state_dict': depth_scheduler.state_dict()}
             )
             print(f" ✓ Saved best model (val_loss: {best_val_loss:.4f})")
 
@@ -635,11 +767,14 @@ def train(config: ExperimentConfig) -> tuple:
         config.checkpoint_dir,
         f'{config.experiment_name}_best.pt'
     )
-    load_checkpoint(model, optimizer, checkpoint_path)
+    checkpoint = load_checkpoint(model, optimizer, checkpoint_path)
+    if isinstance(checkpoint, dict) and 'depth_scheduler_state_dict' in checkpoint:
+        depth_scheduler.load_state_dict(checkpoint['depth_scheduler_state_dict'])
 
     test_metrics = evaluate(
         model, test_loader, config.device,
-        task_loss_fn, eq_losses, logger, epoch, config, split='test'
+        task_loss_fn, eq_losses, logger, epoch, config, split='test',
+        depth_scheduler=depth_scheduler
     )
 
     # Log test metrics
@@ -664,6 +799,17 @@ def train(config: ExperimentConfig) -> tuple:
                 print(f" {group_type}: {test_metrics[key]:.6f}")
 
     print("=" * 80)
+
+    # Persist test metrics next to the config so completed runs can be
+    # aggregated into tables/CSVs (see collect_ablation_results.py).
+    metrics_path = Path(config.output_dir) / 'test_metrics.json'
+    serializable = {
+        k: (float(v) if (torch.is_tensor(v) or isinstance(v, (int, float))) else str(v))
+        for k, v in test_metrics.items()
+    }
+    with open(metrics_path, 'w') as f:
+        json.dump(serializable, f, indent=2)
+    print(f"Test metrics saved to {metrics_path}")
 
     # Finish logging
     logger.finish()

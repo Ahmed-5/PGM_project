@@ -64,12 +64,22 @@ class EquivarianceLossConfig:
     max_translation: float = 5.0
     scale_range: Tuple[float, float] = (0.5, 2.0)
     use_adaptive_weighting: bool = False
-    
+
+    # Normalize the per-group weights so their sum equals
+    # total_equivariance_strength. This keeps the TOTAL equivariance strength
+    # constant across group-set arms (e.g. {so3} vs {so3, translation}) so the
+    # "do groups help?" comparison is fair. See train._resolve_group_weights.
+    normalize_group_weights: bool = True
+    total_equivariance_strength: float = 1.0
+
     # [NEW] Stochastic Regularization for Ablation Efficiency
     stochastic_probability: float = 0.25  # Only apply loss on 25% of batches
 
-    layer_weight_strategy: Literal['constant', 'linear_decay', 'linear_inc', 
-                                   'exp_decay', 'exp_inc', 'u_shaped', 'learnable'] = 'constant'
+    # Layer-wise equivariance weight schedule. Names are normalized in
+    # DepthScheduler (e.g. 'linear_decay' -> 'linear', 'exp_decay' -> 'exponential').
+    layer_weight_strategy: Literal['constant', 'linear', 'linear_decay', 'linear_inc',
+                                   'exponential', 'exp_decay', 'exp_inc', 'inverse',
+                                   'u_shaped', 'learnable'] = 'constant'
     layer_decay_rate: float = 0.5  # For exponential strategies
     
     def __post_init__(self):
@@ -110,7 +120,7 @@ class TrainingConfig:
     """Training hyperparameters with modern best practices"""
     
     batch_size: int = 32
-    num_epochs: int = 1
+    num_epochs: int = 100  # was 1 (a forgotten --training.num_epochs silently ran 1 epoch)
     learning_rate: float = 0.001
     weight_decay: float = 1e-5
     grad_clip: float = 1.0
@@ -140,6 +150,11 @@ class DataConfig:
     root: str = './data'
     num_workers: int = 4
     use_positions: bool = False
+
+    # Node feature richness (used by the ZINC loader / feature ablation).
+    # 'combined' = atom features + degree one-hot; 'atomic' = atom features only
+    # (degree slots zeroed so the feature dimension stays constant).
+    feature_type: Literal['atomic', 'combined'] = 'combined'
     
     # [OPTIMIZED] Data loading defaults
     persistent_workers: bool = True
@@ -163,11 +178,12 @@ class LoggingConfig:
     """Comprehensive logging configuration"""
     
     logger_type: Literal['wandb', 'tensorboard', 'both', 'none'] = 'none'
-    
-    # wandb_project: str = 'PGM_Project_wandb'
-    # wandb_entity: Optional[str] = "PGM"
-    wandb_project: str = 'PGM'
-    wandb_entity: Optional[str] = "PGM_Project_wandb"
+
+    # Placeholders — override via --logging.wandb_project / --logging.wandb_entity.
+    # entity=None lets wandb use the authenticated user's default entity.
+    # (Previously project/entity were swapped: project held the entity string.)
+    wandb_project: str = 'PGM_Project'
+    wandb_entity: Optional[str] = None
     wandb_name: Optional[str] = None
     wandb_notes: Optional[str] = None
     wandb_tags: List[str] = field(default_factory=list)
@@ -207,14 +223,23 @@ class ExperimentConfig:
     timestamp: str = field(default_factory=lambda: datetime.now().strftime('%Y%m%d_%H%M%S'))
     
     def __post_init__(self):
+        self.finalize()
+
+    def finalize(self):
+        """(Re)compute run directories and validate model-data compatibility.
+
+        Called by __post_init__ on construction; the CLI calls it again after
+        applying overrides so directory naming and validation see the final
+        config values.
+        """
         if not self.checkpoint_dir:
             self.checkpoint_dir = f'./checkpoints/{self.experiment_name}_{self.timestamp}'
         if not self.output_dir:
             self.output_dir = f'./outputs/{self.experiment_name}_{self.timestamp}'
-        
+
         Path(self.checkpoint_dir).mkdir(parents=True, exist_ok=True)
         Path(self.output_dir).mkdir(parents=True, exist_ok=True)
-        
+
         # Validate model-data compatibility
         position_models = {
             'schnet', 'dimenet', 'egnn', 'painn',

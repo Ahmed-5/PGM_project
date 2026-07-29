@@ -16,6 +16,17 @@ import torch.nn.functional as F
 import numpy as np
 from typing import Optional, Union
 
+
+def _inverse_softplus(y: torch.Tensor) -> torch.Tensor:
+    """Inverse of ``F.softplus``: ``log(exp(y) - 1)``.
+
+    Used to initialize the learnable schedule so that the *effective* initial
+    weights (after the ``softplus`` in ``get_all_alphas``) equal the intended
+    ``alpha_0 * exp(-beta * l)`` target rather than ``softplus`` of it.
+    """
+    return torch.log(torch.expm1(y.clamp_min(1e-8)))
+
+
 class DepthScheduler(nn.Module):
     """
     OPTIMIZED: Layer-wise equivariance weight scheduling
@@ -49,7 +60,14 @@ class DepthScheduler(nn.Module):
         """
         super().__init__()
         self.num_layers = num_layers
-        self.schedule_type = schedule_type.lower()
+
+        # Normalize schedule aliases so config/CLI names map onto the
+        # canonical schedules implemented below.
+        aliases = {
+            'linear_decay': 'linear',
+            'exp_decay': 'exponential',
+        }
+        self.schedule_type = aliases.get(schedule_type.lower(), schedule_type.lower())
         self.alpha_0 = alpha_0
         self.beta = beta
         self.gamma = gamma
@@ -67,9 +85,14 @@ class DepthScheduler(nn.Module):
 
         # Initialize or register buffer
         if self.schedule_type == 'learnable':
-            # Initialize learnable parameters
-            init_values = alpha_0 * np.exp(-beta * np.arange(num_layers))
-            self.alpha = nn.Parameter(torch.tensor(init_values, dtype=torch.float32))
+            # Initialize learnable parameters through the *inverse* softplus so
+            # that the effective initial weights recovered by get_all_alphas()
+            # (which applies softplus) equal the intended target
+            # alpha_0 * exp(-beta * l). Previously the raw target was stored and
+            # then passed through softplus, shifting the initialization upward.
+            target = alpha_0 * np.exp(-beta * np.arange(num_layers))
+            self.alpha = nn.Parameter(
+                _inverse_softplus(torch.tensor(target, dtype=torch.float32)))
         else:
             # Pre-compute fixed schedules (vectorized)
             self._compute_schedule_vectorized()

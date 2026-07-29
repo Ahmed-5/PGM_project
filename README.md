@@ -1,5 +1,54 @@
 # Relaxed Equivariant Graph Neural Networks
 
+> **NEW: `relaxed/` unified package** — both code paths below are now merged
+> behind one config, CLI, loss library, and reporting system. Prefer it for new
+> work:
+>
+> ```bash
+> python -m relaxed.cli --data.name nbody --model.name transformer \
+>     --train.mode remul --train.beta 1.0 --train.max_steps 50000 --train.device cuda
+> python -m relaxed.cli --data.name QM9 --data.use_positions true \
+>     --model.name gcn --model.use_pos true --loss.formulation layerwise \
+>     --loss.symmetry_groups "['so3','translation']" --train.epochs 50
+> python -m relaxed.collect      # aggregate all runs (legacy + new)
+> python -m relaxed.benchmark    # paper §6.4 compute-time benchmark
+> ```
+>
+> See `AGENTS.md` for the full unified-framework guide. The legacy paths below
+> remain fully supported.
+
+This repository contains **two complementary code paths**:
+
+1. **`remul/`** — faithful reproduction of the dynamics experiments from
+   [**Relaxed Equivariance via Multitask Learning**](https://arxiv.org/abs/2410.17878)
+   (REMUL). Uses the paper's datasets (N-body, CMU MoCap, MD17), models
+   (Transformer, MLP, GNN + equivariant baselines), and training objective.
+2. **Top-level modules** — a separate research extension on molecular **graph
+   property** datasets (ZINC, QM9, …) with layer-wise equivariance loss and
+   depth-adaptive scheduling.
+
+> **To reproduce the paper's Tables 1–3**, use the `remul/` package (see
+> [remul/README.md](remul/README.md)). The top-level `train.py` / `cli.py`
+> pipeline is *not* the paper setup.
+
+### Quick start (REMUL paper reproduction)
+
+```bash
+# 1. Install dependencies
+bash setup_remul.sh
+
+# 2. Download datasets (MD17 × 8 molecules + CMU MoCap subjects 35 & 9)
+python -m remul.download
+
+# 3. Smoke test (CPU, ~4 min)
+SMOKE=1 bash remul/run_experiments.sh
+
+# 4. Full paper experiments (GPU)
+DEVICE=cuda bash remul/run_experiments.sh
+```
+
+---
+
 A comprehensive PyTorch implementation of Graph Neural Networks (GNNs) with support for multiple symmetry groups (permutation, SO(3), E(3), SE(3), etc.) and equivariance-aware training. This framework enables learning symmetry-preserving representations in molecular graphs and point clouds.
 
 ## Overview
@@ -11,7 +60,9 @@ This project implements **equivariance loss regularization** to train GNNs that 
 - **13 GNN Architectures**: From baseline MLPs to advanced equivariant models
 - **8 Symmetry Groups**: Permutation, SO(3), O(3), SE(3), E(3), Translation, Reflection, Scaling
 - **Flexible Configuration System**: Type-safe YAML-like configuration with presets
-- **Multiple Datasets**: ZINC, QM9, QM7b, MD17, OC20, ModelNet40, ShapeNet, and more
+- **Multiple Datasets**: ZINC, QM9, QM7b, MD17, ModelNet40 have working loaders
+  (other names in `DataConfig` — OC20, ShapeNet, AQSOL, … — are listed but **not
+  implemented**; `test_load_dataset.py` shows which load)
 - **Production-Ready Training**: Early stopping, checkpointing, gradient clipping, mixed precision
 - **Logging Integration**: Weights & Biases, TensorBoard, custom metrics tracking
 - **GPU Optimized**: Efficient GPU utilization with proper CUDA synchronization
@@ -22,6 +73,12 @@ This project implements **equivariance loss regularization** to train GNNs that 
 
 ```
 .
+├── remul/                   # REMUL paper reproduction (N-body, MoCap, MD17)
+│   ├── datasets/            #   Paper datasets + downloaders
+│   ├── models/              #   Paper models + equivariant baselines
+│   ├── train.py             #   REMUL multitask training loop
+│   ├── download.py          #   Dataset downloader
+│   └── run_experiments.sh   #   Full paper experiment suite
 ├── equivariant_gnn.py       # Unified BaseGNN with 13 architectures
 ├── equivariance_loss.py     # Equivariance loss computation for 8 symmetry groups
 ├── train.py                 # Main training script
@@ -247,31 +304,38 @@ Individual scaling and reflection equivariance
 
 ## Datasets
 
+> Only **ZINC, QM9, QM7b, MD17, and ModelNet40** have implemented loaders (see
+> `DATASET_LOADERS` in `load_dataset.py`); the names below without loaders are
+> aspirational. Also note: ZINC/QM7b have no 3D coordinates, so geometric
+> equivariance groups (`so3`, `translation`, …) are vacuous on them — use
+> `permutation` there, and geometric groups only on QM9/MD17/ModelNet40 with a
+> position-consuming model (`--model.use_pos true` for gcn/gin/graphsage).
+
 ### Molecular Graphs (2D)
 
-- **ZINC** (250K molecules): Property prediction
-- **AQSOL** (10K molecules): Solubility prediction
+- **ZINC** (250K molecules): Property prediction ✅ loader
+- **AQSOL** (10K molecules): Solubility prediction ❌ no loader
 
 ### Quantum Chemistry (3D)
 
-- **QM9** (134K molecules): 13 quantum properties
-- **QM7b** (7K molecules): Atomization energies
-- **MD17** (150K-1M conformations): Molecular dynamics
+- **QM9** (134K molecules): 13 quantum properties ✅ loader
+- **QM7b** (7K molecules): Atomization energies ✅ loader
+- **MD17** (150K-1M conformations): Molecular dynamics ✅ loader
 
 ### Materials & Catalysis
 
-- **OC20** (1.3M structures): Catalyst adsorption
-- **ISO17** (Constitutional isomers)
+- **OC20** (1.3M structures): Catalyst adsorption ❌ no loader
+- **ISO17** (Constitutional isomers) ❌ no loader
 
 ### Point Clouds
 
-- **ModelNet40** (12K models): Shape classification
-- **ShapeNet** (51K models): 3D shape dataset
+- **ModelNet40** (12K models): Shape classification ✅ loader
+- **ShapeNet** (51K models): 3D shape dataset ❌ no loader
 
 ### Biomolecules
 
-- **ATOM3D** (Various tasks): Protein interactions
-- **Molecule3D** (3.9M molecules): 3D geometry prediction
+- **ATOM3D** (Various tasks): Protein interactions ❌ no loader
+- **Molecule3D** (3.9M molecules): 3D geometry prediction ❌ no loader
 
 ---
 
@@ -494,7 +558,7 @@ For questions or issues, please open an issue on GitHub or contact the maintaine
 ## FAQ
 
 **Q: Which model should I use?**
-A: Start with GCN for 2D graphs (ZINC), EGNN for 3D molecular data with geometry (QM9, MD17), and NequIP/PaiNN for force predictions.
+A: Start with GCN for 2D graphs (ZINC), EGNN for 3D molecular data with geometry (QM9, MD17), and PaiNN for vector features. Note: `se3_transformer`, `nequip`, and `dimenet` are non-equivariant placeholder implementations in this repo (global attention / unused geometry / zeroed angles) — don't use them for equivariance benchmarks.
 
 **Q: How do I add a new dataset?**
 A: Implement a loader in `load_dataset.py` and register it in `DATASET_SYMMETRIES`.

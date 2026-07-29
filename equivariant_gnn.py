@@ -105,6 +105,19 @@ class BaseGNN(nn.Module):
         # Call appropriate builder
         builders[self.model_type]()
 
+        # These three architectures are placeholders that do NOT implement the
+        # geometry their names imply (see get_symmetry_info); warn once so the
+        # equivariance-loss results with them are not misread.
+        if self.model_type in {'se3_transformer', 'nequip', 'dimenet'}:
+            import warnings
+            warnings.warn(
+                f"model_type='{self.model_type}' is a non-equivariant placeholder "
+                "implementation (it does not use the geometry its name implies). "
+                "Do not interpret equivariance-loss results with it as those of "
+                "the real architecture.",
+                UserWarning
+            )
+
         # Output predictor (common for most models)
         self._build_predictor()
 
@@ -150,8 +163,13 @@ class BaseGNN(nn.Module):
         self.convs = nn.ModuleList()
         self.batch_norms = nn.ModuleList()
 
+        # When use_pos is enabled, node positions are concatenated to the input
+        # features so the network is genuinely position-sensitive (otherwise
+        # geometric equivariance losses are trivially ~0).
+        in_dim = self.in_channels + (self.spatial_dim if self.use_pos else 0)
+
         # Input layer
-        self.convs.append(self._build_conv_layer(self.in_channels, self.hidden_channels))
+        self.convs.append(self._build_conv_layer(in_dim, self.hidden_channels))
         self.batch_norms.append(nn.BatchNorm1d(self.hidden_channels))
 
         # Hidden layers
@@ -376,7 +394,7 @@ class BaseGNN(nn.Module):
             if return_layer_outputs:
                 layer_outputs.append({
                     'layer_idx': i,
-                    'representation': x.detach().clone(),
+                    'representation': x if torch.is_grad_enabled() else x.detach().clone(),
                     'edge_index': edge_index,
                     'batch': batch
                 })
@@ -395,7 +413,10 @@ class BaseGNN(nn.Module):
     def _forward_standard_gnn(self, x, pos, edge_index, batch, return_layer_outputs, return_node_embeddings):
         """OPTIMIZED: Vectorized operations, no Python loops"""
         layer_outputs = []
-        
+
+        if self.use_pos:
+            x = torch.cat([x, pos], dim=-1)
+
         for i, (conv, bn) in enumerate(zip(self.convs, self.batch_norms)):
             # --- FIX: Ensure edge_index is long ---
             x = conv(x, edge_index.long())
@@ -403,11 +424,14 @@ class BaseGNN(nn.Module):
             x = bn(x)
             x = F.relu(x)
             
-            # Capture HERE (Post-activation, Pre-dropout)
+            # Capture HERE (Post-activation, Pre-dropout).
+            # Keep the graph (no detach) whenever grad is enabled so the
+            # per-layer equivariance loss can backpropagate, even when the
+            # model is temporarily switched to eval() to disable dropout.
             if return_layer_outputs:
                 layer_outputs.append({
                     'layer_idx': i,
-                    'representation': x.detach().clone() if not self.training else x, # clone if needed
+                    'representation': x if torch.is_grad_enabled() else x.detach().clone(),
                     'edge_index': edge_index,
                     'batch': batch
                 })
@@ -432,7 +456,7 @@ class BaseGNN(nn.Module):
             if return_layer_outputs:
                 layer_outputs.append({
                     'layer_idx': i,
-                    'representation': x.detach().clone(),
+                    'representation': x if torch.is_grad_enabled() else x.detach().clone(),
                     'edge_index': edge_index,
                     'batch': batch
                 })
@@ -459,7 +483,7 @@ class BaseGNN(nn.Module):
             if return_layer_outputs:
                 layer_outputs.append({
                     'layer_idx': i,
-                    'representation': x.detach().clone(),
+                    'representation': x if torch.is_grad_enabled() else x.detach().clone(),
                     'edge_index': edge_index,
                     'batch': batch
                 })
@@ -486,8 +510,8 @@ class BaseGNN(nn.Module):
             if return_layer_outputs:
                 layer_outputs.append({
                     'layer_idx': i,
-                    'representation': x.detach().clone(),
-                    'positions': pos.detach().clone(),
+                    'representation': x if torch.is_grad_enabled() else x.detach().clone(),
+                    'positions': pos if torch.is_grad_enabled() else pos.detach().clone(),
                     'edge_index': edge_index,
                     'batch': batch
                 })
@@ -515,8 +539,8 @@ class BaseGNN(nn.Module):
             if return_layer_outputs:
                 layer_outputs.append({
                     'layer_idx': i,
-                    'representation': s.detach().clone(),
-                    'vector_representation': v.detach().clone(),
+                    'representation': s if torch.is_grad_enabled() else s.detach().clone(),
+                    'vector_representation': v if torch.is_grad_enabled() else v.detach().clone(),
                     'edge_index': edge_index,
                     'batch': batch
                 })
@@ -541,7 +565,7 @@ class BaseGNN(nn.Module):
             if return_layer_outputs:
                 layer_outputs.append({
                     'layer_idx': i,
-                    'representation': v.detach().clone(),
+                    'representation': v if torch.is_grad_enabled() else v.detach().clone(),
                     'edge_index': edge_index,
                     'batch': batch
                 })
@@ -567,7 +591,7 @@ class BaseGNN(nn.Module):
             if return_layer_outputs:
                 layer_outputs.append({
                     'layer_idx': i,
-                    'representation': features[0].detach().clone(),
+                    'representation': features[0] if torch.is_grad_enabled() else features[0].detach().clone(),
                     'edge_index': edge_index,
                     'batch': batch
                 })
@@ -592,7 +616,7 @@ class BaseGNN(nn.Module):
             if return_layer_outputs:
                 layer_outputs.append({
                     'layer_idx': i,
-                    'representation': x.detach().clone(),
+                    'representation': x if torch.is_grad_enabled() else x.detach().clone(),
                     'edge_index': edge_index,
                     'batch': batch
                 })
@@ -619,7 +643,7 @@ class BaseGNN(nn.Module):
             if return_layer_outputs:
                 layer_outputs.append({
                     'layer_idx': i,
-                    'representation': x.detach().clone(),
+                    'representation': x if torch.is_grad_enabled() else x.detach().clone(),
                     'edge_index': edge_index,
                     'batch': batch
                 })
@@ -648,7 +672,7 @@ class BaseGNN(nn.Module):
             if return_layer_outputs:
                 layer_outputs.append({
                     'layer_idx': i,
-                    'representation': x.detach().clone(),
+                    'representation': x if torch.is_grad_enabled() else x.detach().clone(),
                     'edge_index': edge_index,
                     'batch': batch
                 })
@@ -672,7 +696,7 @@ class BaseGNN(nn.Module):
             if return_layer_outputs:
                 layer_outputs.append({
                     'layer_idx': i,
-                    'representation': x.detach().clone(), # This is an Irreps tensor
+                    'representation': x if torch.is_grad_enabled() else x.detach().clone(), # This is an Irreps tensor
                     'edge_index': edge_index,
                     'batch': batch
                 })
@@ -742,12 +766,12 @@ class BaseGNN(nn.Module):
             'gin': {'permutation': True, 'rotation': False, 'translation': False, 'level': 'Permutation only'},
             'graphsage': {'permutation': True, 'rotation': False, 'translation': False, 'level': 'Permutation only'},
             'schnet': {'permutation': True, 'rotation': 'Invariant', 'translation': 'Invariant', 'level': 'E(3) invariant'},
-            'dimenet': {'permutation': True, 'rotation': 'Invariant', 'translation': 'Invariant', 'level': 'E(3) invariant'},
+            'dimenet': {'permutation': True, 'rotation': 'Invariant', 'translation': 'Invariant', 'level': 'E(3) invariant (distance-based; angle path is a placeholder)'},
             'egnn': {'permutation': True, 'rotation': 'Equivariant', 'translation': 'Equivariant', 'level': 'E(3) equivariant'},
             'painn': {'permutation': True, 'rotation': 'Equivariant', 'translation': 'Equivariant', 'level': 'E(3) equivariant'},
             'vector_neuron': {'permutation': True, 'rotation': 'SO(3) Equivariant', 'translation': 'Invariant', 'level': 'SO(3) equivariant'},
-            'se3_transformer': {'permutation': True, 'rotation': 'SE(3) Equivariant', 'translation': 'Equivariant', 'level': 'SE(3) equivariant'},
-            'nequip': {'permutation': True, 'rotation': 'Equivariant', 'translation': 'Equivariant', 'level': 'E(3) equivariant'},
+            'se3_transformer': {'permutation': False, 'rotation': False, 'translation': False, 'level': 'None (global-attention placeholder, not equivariant as implemented)'},
+            'nequip': {'permutation': True, 'rotation': False, 'translation': False, 'level': 'Permutation only (geometry unused, not equivariant as implemented)'},
             'clofnet': {'permutation': True, 'rotation': 'SE(3) Equivariant', 'translation': 'Equivariant', 'level': 'SE(3) equivariant'},
             'graphormer': {'permutation': True, 'rotation': 'Equivariant', 'translation': 'Equivariant', 'level': 'E(3) equivariant'},
             'equiformer': {'permutation': True, 'rotation': 'Equivariant', 'translation': 'Equivariant', 'level': 'E(3) equivariant'},

@@ -264,19 +264,60 @@ class NoLogger(BaseLogger):
         pass
 
 
+class CompositeLogger(BaseLogger):
+    """Forwards every logging call to multiple child loggers (e.g. wandb + tensorboard)."""
+
+    def __init__(self, config, loggers: List[BaseLogger]):
+        super().__init__(config)
+        self.loggers = loggers
+        print(f"✓ Composite logger over {[type(l).__name__ for l in loggers]}")
+
+    def _forward(self, method: str, *args, **kwargs):
+        for logger in self.loggers:
+            fn = getattr(logger, method, None)
+            if callable(fn):
+                fn(*args, **kwargs)
+
+    def log_metrics(self, metrics: Dict[str, Any], step: Optional[int] = None):
+        self._forward('log_metrics', metrics, step)
+
+    def log_hyperparameters(self, params: Dict[str, Any]):
+        self._forward('log_hyperparameters', params)
+
+    def log_model_graph(self, model, input_data):
+        self._forward('log_model_graph', model, input_data)
+
+    def log_histogram(self, name: str, values: torch.Tensor, step: Optional[int] = None):
+        self._forward('log_histogram', name, values, step)
+
+    def log_image(self, name: str, image, step: Optional[int] = None):
+        self._forward('log_image', name, image, step)
+
+    def watch_model(self, model, log_freq: int = 100):
+        self._forward('watch_model', model, log_freq)
+
+    def save_model_artifact(self, model_path: str, name: str = 'model'):
+        self._forward('save_model_artifact', model_path, name)
+
+    def finish(self):
+        self._forward('finish')
+
+
 def get_logger(config) -> BaseLogger:
     """Factory function to get appropriate logger"""
-    
+
     logger_type = config.logging.logger_type.lower()
-    
+
     if logger_type == 'wandb':
         return WandbLogger(config)
     elif logger_type == 'tensorboard':
         return TensorBoardLogger(config)
+    elif logger_type == 'both':
+        return CompositeLogger(config, [WandbLogger(config), TensorBoardLogger(config)])
     elif logger_type == 'none':
         return NoLogger(config)
     else:
-        raise ValueError(f"Unknown logger type: {logger_type}. Choose from: wandb, tensorboard, none")
+        raise ValueError(f"Unknown logger type: {logger_type}. Choose from: wandb, tensorboard, both, none")
 
 
 class MetricsTracker:

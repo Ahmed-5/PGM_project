@@ -3,3 +3,7 @@ __pycache__/
 checkpoints/
 data/
 wandb/
+.venv/
+outputs/
+results/
+runs/
