@@ -17,7 +17,7 @@ from typing import Callable, Optional
 import torch
 import torch.nn as nn
 
-from .geometry import apply_rotation, sample_rotations
+from .geometry import apply_rotation, sample_rotations, _rotation_from_axis_angle
 
 # Single source of truth for the layer-wise functional loss (8 groups,
 # GPU-vectorized, [N,H,3] vector support). Imported, not duplicated.
@@ -72,8 +72,20 @@ class RemulLoss(nn.Module):
         self.group = group
         self.metric = metric
         self.num_group_samples = num_group_samples
+        if group == "so2_learn":
+            # Learnable residual-symmetry axis. Initialised OFF every coordinate
+            # axis (unbiased). The equivariance loss ‖f(R_n·x) − R_n·y‖ is
+            # minimised in n exactly when n is a true symmetry axis of the
+            # dynamics (a wrong axis makes R_n·y the wrong target), so gradient
+            # descent on n discovers the residual symmetry. See relaxed.theory.
+            self.learn_axis = nn.Parameter(torch.tensor([1.0, 1.0, 1.0]))
 
     def sample_rotations(self, batch_size: int, device, dtype) -> torch.Tensor:
+        if self.group == "so2_learn":
+            axis = self.learn_axis.to(device=device, dtype=dtype)
+            axis = axis / (axis.norm() + 1e-9)
+            angles = torch.rand(batch_size, device=device, dtype=dtype) * 2 * torch.pi
+            return _rotation_from_axis_angle(axis.unsqueeze(0).expand(batch_size, 3), angles)
         return sample_rotations(self.group, batch_size, device, dtype)
 
     def objective_loss(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
@@ -93,6 +105,59 @@ class RemulLoss(nn.Module):
             pred_rot = model_forward(rotated)
             total = total + _metric(pred_rot, rotated["target"], self.metric)
         return total / self.num_group_samples
+
+
+class AugerinoAug(nn.Module):
+    """Augerino (Benton et al., 2020) — learn the augmentation distribution.
+
+    Parameterizes per-generator rotation ranges theta = (theta_x, theta_y, theta_z),
+    theta_i = pi * sigmoid(raw_i) in [0, pi]. Samples g = R_x(a_x) R_y(a_y) R_z(a_z)
+    with a_i ~ U(-theta_i, theta_i). The averaged equivariant prediction (AugeredModel)
+    plus a breadth regularizer (-lambda * sum theta_i, added to the loss) recovers WHICH
+    axes are symmetries: augmenting about a true symmetry axis leaves the task loss
+    unchanged so theta grows to its cap, while augmenting about a non-symmetry axis
+    smears the prediction and hurts the task loss so theta stays small. This is the
+    direct "learn which symmetry" competitor to loss-side group selection."""
+
+    def __init__(self, init_raw: float = -2.0):
+        super().__init__()
+        self.raw = nn.Parameter(torch.full((3,), float(init_raw)))  # (x, y, z)
+
+    @property
+    def theta(self) -> torch.Tensor:
+        return torch.pi * torch.sigmoid(self.raw)
+
+    def sample_rotations(self, batch_size: int, device, dtype) -> torch.Tensor:
+        th = self.theta.to(device=device, dtype=dtype)
+        a = (torch.rand(batch_size, 3, device=device, dtype=dtype) * 2 - 1) * th
+        axx = torch.tensor([1.0, 0.0, 0.0], device=device, dtype=dtype).expand(batch_size, 3)
+        axy = torch.tensor([0.0, 1.0, 0.0], device=device, dtype=dtype).expand(batch_size, 3)
+        axz = torch.tensor([0.0, 0.0, 1.0], device=device, dtype=dtype).expand(batch_size, 3)
+        Rx = _rotation_from_axis_angle(axx, a[:, 0])
+        Ry = _rotation_from_axis_angle(axy, a[:, 1])
+        Rz = _rotation_from_axis_angle(axz, a[:, 2])
+        return torch.bmm(torch.bmm(Rz, Ry), Rx)
+
+
+class AugeredModel(nn.Module):
+    """Averaged equivariant predictor  f_aug(x) = (1/K) sum_k R_k^{-1} f(R_k x),
+    R_k ~ the Augerino distribution. Used as a drop-in model for both training and
+    evaluation so metrics reflect Augerino's actual predictor."""
+
+    def __init__(self, model, aug: AugerinoAug, ncopies: int = 4):
+        super().__init__()
+        self.model = model
+        self.aug = aug
+        self.ncopies = ncopies
+
+    def forward(self, batch: dict) -> torch.Tensor:
+        pos = batch["pos"]
+        preds = []
+        for _ in range(self.ncopies):
+            rot = self.aug.sample_rotations(pos.shape[0], pos.device, pos.dtype)
+            rb = rotate_batch(batch, rot)
+            preds.append(apply_rotation(self.model(rb), rot.transpose(-1, -2)))  # R^{-1} f(R x)
+        return torch.stack(preds).mean(0)
 
 
 class GradNorm(nn.Module):
@@ -159,6 +224,10 @@ def equivariance_error(
     """
     pos = batch["pos"]
     b = pos.shape[0]
+    if group == "so2_learn":
+        # E/E' are defined w.r.t. a fixed group; the axis here is a trained
+        # parameter, so skip this diagnostic (task MSE + OOD-axis carry the signal).
+        return pos.new_zeros(())
     f_x = model_forward(batch)  # (B, N, 3)
 
     rho_f, f_phi = [], []

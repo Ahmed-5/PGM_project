@@ -28,7 +28,8 @@ import torch.nn as nn
 
 from ..adapt import to_remul_config
 from ..datasets import build_datasets
-from ..losses import GradNorm, RemulLoss, equivariance_error, rotate_batch
+from ..losses import GradNorm, RemulLoss, equivariance_error, rotate_batch, AugerinoAug, AugeredModel
+from ..geometry import random_so2_batch
 from ..metrics import mse as mse_metric
 from ..models import build_model
 from ..reporting import make_record, write_record
@@ -58,6 +59,34 @@ def _get_last_shared_weight(model: nn.Module) -> torch.Tensor:
 
 def _to_device(batch, device):
     return {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in batch.items()}
+
+
+@torch.no_grad()
+def evaluate_ood_axis(model, loader, axis_char, device, n_rot=8):
+    """OOD robustness to the task's residual symmetry (RQ: does soft equivariance
+    pay off off-distribution?).
+
+    For a field-broken task the true dynamics IS SO(2)-equivariant about the field
+    axis, yet the training set is in a fixed frame (no rotation augmentation). We
+    evaluate test MSE on inputs+targets rotated by random SO(2) rotations about
+    that axis — orientations unseen in training. A model that respects the residual
+    symmetry is unchanged; a non-equivariant one degrades. Returns (mse, degrade)
+    where degrade = ood_mse / canonical_mse (1.0 = perfectly robust)."""
+    model.eval()
+    tot, n_elem, tot_can, n_can = 0.0, 0, 0.0, 0
+    for batch in loader:
+        batch = _to_device(batch, device)
+        b = batch["pos"].shape[0]
+        tot_can += torch.nn.functional.mse_loss(model(batch), batch["target"], reduction="sum").item()
+        n_can += batch["target"].numel()
+        for _ in range(n_rot):
+            rot = random_so2_batch(axis_char, b, device=device, dtype=batch["pos"].dtype)
+            rb = rotate_batch(batch, rot)
+            tot += torch.nn.functional.mse_loss(model(rb), rb["target"], reduction="sum").item()
+            n_elem += rb["target"].numel()
+    mse = tot / max(n_elem, 1)
+    can = tot_can / max(n_can, 1)
+    return {"mse": mse, "canonical_mse": can, "degrade": mse / (can + 1e-12)}
 
 
 def _task_metric(pred, target, kind: str) -> float:
@@ -134,9 +163,22 @@ def train(cfg, verbose: bool = True):
     ood_loader = make_loader(data["ood"], tcfg.batch_size) if "ood" in data else None
 
     model = build_model(cfg, meta).to(device)
-    loss_fn = RemulLoss(tcfg.group, tcfg.metric, tcfg.num_group_samples)
-    opt = torch.optim.Adam(model.parameters(), lr=tcfg.lr,
-                           weight_decay=tcfg.weight_decay)
+    loss_fn = RemulLoss(tcfg.group, tcfg.metric, tcfg.num_group_samples).to(device)
+    # Augerino baseline: a learnable augmentation distribution + averaged predictor.
+    augerino = AugerinoAug().to(device) if tcfg.mode == "augerino" else None
+    aug_model = AugeredModel(model, augerino, ncopies=4) if augerino is not None else None
+    eval_model = aug_model if aug_model is not None else model
+    # Include the loss's own parameters (the learnable so2_learn axis, or the Augerino
+    # ranges) so the residual symmetry is discovered jointly with the model — these are
+    # a few parameters and need a much higher LR than the model to move.
+    extra_params = list(loss_fn.parameters()) + (list(augerino.parameters()) if augerino else [])
+    if extra_params:
+        opt = torch.optim.Adam(
+            [{"params": list(model.parameters()), "lr": tcfg.lr},
+             {"params": extra_params, "lr": max(0.03, 100.0 * tcfg.lr)}],
+            weight_decay=tcfg.weight_decay)
+    else:
+        opt = torch.optim.Adam(model.parameters(), lr=tcfg.lr, weight_decay=tcfg.weight_decay)
 
     # NEW: optional LR schedule (off by default for paper fidelity).
     # Created after total_epochs is known so T_max spans the whole run.
@@ -178,6 +220,9 @@ def train(cfg, verbose: bool = True):
     else:
         total_epochs = tcfg.epochs
     eval_every = max(cfg.log.eval_every, total_epochs // 50)
+    # Learnable-axis warmup (off by default — the cosine LR decay makes a late
+    # release counter-productive; more group samples per step is the better lever).
+    axis_warmup = 0
 
     if cfg.schedule.lr_schedule != "none":
         sched_cfg = cfg.schedule
@@ -215,10 +260,24 @@ def train(cfg, verbose: bool = True):
                     torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                 opt.step()
 
+            elif tcfg.mode == "augerino":
+                pred = aug_model(batch)                       # averaged equivariant prediction
+                task = loss_fn.objective_loss(pred, batch["target"])
+                breadth = -tcfg.beta * augerino.theta.sum()   # reward larger ranges (anti-collapse)
+                total = task + breadth
+                obj = task.detach(); equi = augerino.theta.detach().mean()
+                total.backward()
+                if grad_clip > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                opt.step()
+
             else:  # remul
                 pred = model(batch)
                 obj = loss_fn.objective_loss(pred, batch["target"])
-                equi = loss_fn.equivariance_loss(lambda b: model(b), batch)
+                # so2_learn warmup: no equivariance term yet (axis stays put until
+                # the model has learned the dynamics).
+                equi = (obj.new_zeros(()) if (axis_warmup and step < axis_warmup)
+                        else loss_fn.equivariance_loss(lambda b: model(b), batch))
                 if gradnorm is not None:
                     weighted = gradnorm.weighted_sum([obj, equi])
                     weighted.backward(retain_graph=True)
@@ -259,7 +318,7 @@ def train(cfg, verbose: bool = True):
         if (epoch + 1) % eval_every == 0:
             # Cheap MSE-only eval for best-checkpoint selection (E/E' is measured
             # only at the final eval — it is the expensive part).
-            m = evaluate(model, val_loader, loss_fn, device, tcfg.eval_group_samples,
+            m = evaluate(eval_model, val_loader, loss_fn, device, tcfg.eval_group_samples,
                          compute_equiv=False)
             if m["mse"] < best_val:      # RC2: snapshot best-by-val model
                 best_val = m["mse"]
@@ -297,7 +356,7 @@ def train(cfg, verbose: bool = True):
     # (a subset gives a stable functional-equivariance estimate at far lower cost
     # than the full 5000-sample x eval_group_samples rotation sweep).
     eq_cap = max(tcfg.eval_equiv_batches, 48)
-    results = {"test": evaluate(model, test_loader, loss_fn, device,
+    results = {"test": evaluate(eval_model, test_loader, loss_fn, device,
                                 tcfg.eval_group_samples, max_equiv_batches=eq_cap)}
     if cfg.train.per_axis_eval:
         from ..losses import per_axis_equivariance_errors
@@ -307,10 +366,35 @@ def train(cfg, verbose: bool = True):
     if ood_loader is not None:
         results["ood"] = evaluate(model, ood_loader, loss_fn, device,
                                   tcfg.eval_group_samples, max_equiv_batches=eq_cap)
+    # Residual-symmetry OOD robustness: for a field-broken task the true dynamics
+    # is SO(2)-equivariant about the field axis; test on rotations about it.
+    fs = float(getattr(cfg.data, "field_strength", 0.0) or 0.0)
+    # Field-broken N-body OR MoCap (whose dynamics is SO(2)-equivariant about the
+    # vertical/heading axis — physically arbitrary heading): test robustness to
+    # rotations about that residual axis (set via --data.field_axis).
+    if fs != 0.0 or getattr(cfg.data, "name", "") == "mocap":
+        axis_char = {0: "x", 1: "y", 2: "z"}.get(int(getattr(cfg.data, "field_axis", 2)), "z")
+        results["ood_axis"] = evaluate_ood_axis(eval_model, test_loader, axis_char, device)
     # Surface the best validation mse so model/beta selection is on VAL, not test
     # (avoids the test-set selection bias when picking the reported REMUL beta).
     if best_val != float("inf"):
         results["val"] = {"best_mse": float(best_val)}
+    if augerino is not None:
+        th = augerino.theta.detach().float().cpu()
+        results["augerino_theta"] = {"x": float(th[0]), "y": float(th[1]), "z": float(th[2])}
+    # Learnable-axis discovery: report the recovered axis and its alignment with
+    # the true residual symmetry (the field axis).
+    if getattr(loss_fn, "group", None) == "so2_learn":
+        ax = loss_fn.learn_axis.detach().float().cpu()
+        ax = ax / (ax.norm() + 1e-9)
+        fa = int(getattr(cfg.data, "field_axis", 2))
+        true = torch.zeros(3); true[fa] = 1.0
+        cos = float(abs(torch.dot(ax, true)))
+        results["learned_axis"] = {
+            "vector": [round(v, 4) for v in ax.tolist()],
+            "cosine_to_field_axis": cos,
+            "angle_deg": float(torch.acos(torch.clamp(torch.tensor(cos), 0.0, 1.0)) * 180.0 / torch.pi),
+        }
     eval_seconds = time.time() - t_eval
 
     if writer:

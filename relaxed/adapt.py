@@ -22,6 +22,7 @@ _TO_REMUL = {
     "data.dt": ("data", "dt"), "data.distribution": ("data", "distribution"),
     "data.field_strength": ("data", "field_strength"),
     "data.field_axis": ("data", "field_axis"),
+    "data.iso_input": ("data", "iso_input"),
     "data.n_train": ("data", "n_train"), "data.n_val": ("data", "n_val"),
     "data.n_test": ("data", "n_test"), "data.molecule": ("data", "molecule"),
     "data.delta_t": ("data", "delta_t"),

@@ -47,6 +47,7 @@ class DataConfig:
     distribution: Literal["in", "ood"] = "in"
     field_strength: float = 0.0   # external accel; 0=SO(3)-symmetric, >0 breaks to SO(2) about field_axis
     field_axis: int = 2           # 0=x,1=y,2=z
+    iso_input: bool = False       # SO(3)-symmetric inputs but SO(2) task (label-breaks-symmetry wedge)
     n_train: int = 100
     n_val: int = 5000
     n_test: int = 5000

@@ -85,7 +85,8 @@ def _canonical_template(n_sat):
     return torch.stack([r * torch.cos(theta), r * torch.sin(theta), z], dim=-1)
 
 
-def _make_gravity(n_samples, n_bodies, num_steps, dt, generator, field_strength=0.0, field_axis=2):
+def _make_gravity(n_samples, n_bodies, num_steps, dt, generator, field_strength=0.0, field_axis=2,
+                  iso_input=False):
     n_sat = n_bodies - 1
     center_mass = torch.rand(n_samples, 1, generator=generator) * 9 + 1.0  # U[1,10]
     sat_mass = torch.rand(n_samples, n_sat, generator=generator) * 0.09 + 0.01
@@ -128,6 +129,18 @@ def _make_gravity(n_samples, n_bodies, num_steps, dt, generator, field_strength=
     if field_strength:
         field = torch.zeros(3)
         field[int(field_axis)] = float(field_strength)  # along field_axis -> residual SO(2) about it
+
+    if iso_input:
+        # LABEL-BREAKS-SYMMETRY construction: rotate each initial condition by a
+        # random full-SO(3) rotation *before* integrating under the FIXED lab-frame
+        # field. The input distribution {R·x0} is then SO(3)-symmetric, but the task
+        # map x0 -> integrate(x0, field_z) is only SO(2)-equivariant about the field
+        # axis. Distribution-based symmetry discovery (LieGAN) sees the SO(3) input
+        # symmetry and misses the label-breaking; a task-based method (REMUL) does not.
+        R = random_rotation_matrix(n_samples, generator=generator)   # Haar SO(3), per sample
+        pos = apply_rotation(pos, R)
+        vel = apply_rotation(vel, R)
+
     target = _simulate_gravity(pos, vel, mass, num_steps, dt, field=field)
     h = mass  # scalar feature = mass
     return pos, vel, h, target
@@ -168,6 +181,7 @@ def build_nbody_datasets(cfg):
     maker = _make_charged if egnn_style else _make_gravity
     fs = float(getattr(cfg, "field_strength", 0.0) or 0.0)
     fa = int(getattr(cfg, "field_axis", 2))
+    iso = bool(getattr(cfg, "iso_input", False))
     # With a fixed +z field the task has a preferred axis (SO(2)_z, not SO(3)).
     # Applying the random rotation split would isotropize that axis and undo the
     # symmetry breaking, so we keep a fixed frame (and no OOD-rotation split) when
@@ -178,7 +192,7 @@ def build_nbody_datasets(cfg):
         if egnn_style:
             pos, vel, h, target = maker(n, n_bodies, cfg.num_steps, cfg.dt, g)
         else:
-            pos, vel, h, target = maker(n, n_bodies, cfg.num_steps, cfg.dt, g, field_strength=fs, field_axis=fa)
+            pos, vel, h, target = maker(n, n_bodies, cfg.num_steps, cfg.dt, g, field_strength=fs, field_axis=fa, iso_input=iso)
         pos, target = _center(pos, target)
         if not egnn_style and not broken:
             pos, vel, target = _apply_split_rotation(pos, vel, target, distribution, g)

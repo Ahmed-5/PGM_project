@@ -31,6 +31,8 @@ class DataConfig:
     field_strength: float = 0.0       # uniform external accel; 0 => SO(3)-symmetric,
                                       # >0 breaks SO(3)->SO(2) about field_axis (symmetry-breaking knob)
     field_axis: int = 2               # 0=x, 1=y, 2=z; residual symmetry is SO(2) about this axis
+    iso_input: bool = False           # isotropize inputs (random SO(3) rot before integration) →
+                                      # SO(3)-symmetric input distribution but SO(2) task (label-breaks-symmetry)
     n_train: int = 100
     n_val: int = 5000
     n_test: int = 5000
